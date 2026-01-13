@@ -52,7 +52,9 @@ func Close() error {
 		return nil
 	}
 
-	return DB.Close()
+	DB.Close()
+
+	return nil
 }
 
 // Health checks database health
