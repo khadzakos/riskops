@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riskops-inference-service"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.115.8",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.10.6",
+  "sqlalchemy==2.0.46",
+  "psycopg2-binary==2.9.9",
+  "pandas==2.2.3",
+  "numpy==2.2.1",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["riskops_inference*"]
+

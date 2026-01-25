@@ -120,6 +120,21 @@ services:
     # utility container; used by `docker compose run --rm pipelines <cmd>`
     entrypoint: ["python", "-m", "riskops_pipelines"]
 
+  inference-service:
+    build:
+      context: ./apps/inference-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
+      MLFLOW_TRACKING_URI: http://mlflow:3000
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+
 volumes:
   postgres_data:
   mlflow_artifacts:
