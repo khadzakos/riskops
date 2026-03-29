@@ -12,6 +12,7 @@ import (
 	"github.com/khadzakos/riskops/apps/portfolio-service/internal/repository"
 	"github.com/khadzakos/riskops/apps/portfolio-service/internal/service"
 	"github.com/khadzakos/riskops/pkg/httpserver"
+	"github.com/khadzakos/riskops/pkg/kafka"
 	"github.com/khadzakos/riskops/pkg/logger"
 	"github.com/khadzakos/riskops/pkg/postgres"
 	"github.com/khadzakos/riskops/pkg/swaggerui"
@@ -36,7 +37,10 @@ func main() {
 	defer pool.Close()
 
 	repo := repository.NewPortfolioRepo(pool)
-	svc := service.NewPortfolioService(repo, log)
+	kp := kafka.NewProducer(kafka.ParseBrokers(cfg.KafkaBrokers))
+	defer func() { _ = kp.Close() }()
+
+	svc := service.NewPortfolioService(repo, log, kp)
 	h := handler.NewPortfolioHandler(svc)
 
 	strictHandler := api.NewStrictHandler(h, nil)

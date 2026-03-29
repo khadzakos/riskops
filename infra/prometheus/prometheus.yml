@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:8081"]
+        labels:
+          service: gateway
+
+  - job_name: portfolio-service
+    static_configs:
+      - targets: ["portfolio-service:8082"]
+        labels:
+          service: portfolio
+
+  - job_name: market-data-service
+    static_configs:
+      - targets: ["market-data-service:8083"]
+        labels:
+          service: market-data

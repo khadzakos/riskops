@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/khadzakos/riskops/apps/market-data-service/internal/collector"
 	"github.com/khadzakos/riskops/apps/market-data-service/internal/repository"
+	"github.com/khadzakos/riskops/pkg/kafka"
 	"github.com/khadzakos/riskops/pkg/models"
 	"go.uber.org/zap"
 )
@@ -35,6 +37,7 @@ type IngestService struct {
 	creditRepo *repository.CreditRepo
 	logRepo    *repository.IngestionLogRepo
 	returnsSvc *ReturnsService
+	producer   *kafka.Producer
 	log        *zap.Logger
 }
 
@@ -44,6 +47,7 @@ func NewIngestService(
 	creditRepo *repository.CreditRepo,
 	logRepo *repository.IngestionLogRepo,
 	returnsSvc *ReturnsService,
+	producer *kafka.Producer,
 	log *zap.Logger,
 ) *IngestService {
 	return &IngestService{
@@ -52,6 +56,7 @@ func NewIngestService(
 		creditRepo: creditRepo,
 		logRepo:    logRepo,
 		returnsSvc: returnsSvc,
+		producer:   producer,
 		log:        log,
 	}
 }
@@ -133,18 +138,21 @@ func (s *IngestService) Ingest(ctx context.Context, req IngestRequest) (*IngestR
 
 	s.recordLog(ctx, req, dataType, rowsIngested, "completed", "", dateFrom, dateTo)
 
+	res := &IngestResult{
+		Source:       req.Source,
+		DataType:     dataType,
+		RowsIngested: rowsIngested,
+		Status:       "completed",
+	}
+	s.publishMarketDataIngested(ctx, req, res, dateFrom, dateTo)
+
 	s.log.Info("ingestion completed",
 		zap.String("source", req.Source),
 		zap.String("data_type", dataType),
 		zap.Int("rows_ingested", rowsIngested),
 	)
 
-	return &IngestResult{
-		Source:       req.Source,
-		DataType:     dataType,
-		RowsIngested: rowsIngested,
-		Status:       "completed",
-	}, nil
+	return res, nil
 }
 
 func (s *IngestService) IngestAll(ctx context.Context, dateFrom, dateTo time.Time) ([]*IngestResult, error) {
@@ -255,4 +263,46 @@ func extractSymbols(prices []models.RawPrice) []string {
 		}
 	}
 	return out
+}
+
+type marketDataIngestedPayload struct {
+	Event        string   `json:"event"`
+	Source       string   `json:"source"`
+	DataType     string   `json:"data_type"`
+	RowsIngested int      `json:"rows_ingested"`
+	Status       string   `json:"status"`
+	Symbols      []string `json:"symbols,omitempty"`
+	DateFrom     string   `json:"date_from"`
+	DateTo       string   `json:"date_to"`
+	OccurredAt   string   `json:"occurred_at"`
+}
+
+func (s *IngestService) publishMarketDataIngested(ctx context.Context, req IngestRequest, res *IngestResult, dateFrom, dateTo time.Time) {
+	if s.producer == nil || res == nil || res.Status != "completed" {
+		return
+	}
+	symbols := req.Symbols
+	if len(symbols) == 0 {
+		symbols = []string{}
+	}
+	p := marketDataIngestedPayload{
+		Event:        "market.data.ingested",
+		Source:       res.Source,
+		DataType:     res.DataType,
+		RowsIngested: res.RowsIngested,
+		Status:       res.Status,
+		Symbols:      symbols,
+		DateFrom:     dateFrom.UTC().Format(time.RFC3339),
+		DateTo:       dateTo.UTC().Format(time.RFC3339),
+		OccurredAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		s.log.Warn("kafka: marshal market.data.ingested", zap.Error(err))
+		return
+	}
+	key := []byte(res.Source)
+	if err := s.producer.Publish(ctx, kafka.TopicMarketDataIngested, key, b); err != nil {
+		s.log.Warn("kafka: publish market.data.ingested", zap.Error(err))
+	}
 }

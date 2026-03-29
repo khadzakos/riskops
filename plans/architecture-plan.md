@@ -668,23 +668,23 @@ apps/market-data-service/main.go
 
 The work is split into phases. Each phase produces a working, testable increment.
 
-### Phase 1: Go Foundation + Portfolio Service
+### Phase 1: Go Foundation + Portfolio Service (done)
 1. Initialize Go module at repo root (`go.mod`)
 2. Build `pkg/` shared libraries (httpserver, postgres, config, logger, models)
 3. Build Portfolio Service with full CRUD
 4. Build API Gateway with proxy to Portfolio Service
 5. Update docker-compose, verify frontend can talk to API
 
-### Phase 2: Market Data Service
-6. Build Market Data Service with collector interface
-7. Implement synthetic price generator (Go)
-8. Implement Yahoo Finance collector
+### Phase 2: Market Data Service (done)
+6. Build Market Data Service with collector interface — `apps/market-data-service/internal/collector/collector.go` (`Collector`, `CollectRequest`, `CollectResult`); wired in `main.go`
+7. Implement synthetic price generator (Go) — `apps/market-data-service/internal/collector/synthetic.go` (GBM / synthetic prices)
+8. Implement Yahoo Finance collector — `apps/market-data-service/internal/collector/yahoo.go` (Yahoo Finance v8 chart API)
 9. Implement MOEX ISS collector
 10. Implement synthetic credit data generator
 11. Add MinIO to docker-compose for artifact storage
 12. Wire Airflow DAG to call Market Data Service API
 
-### Phase 3: Kafka Integration
+### Phase 3: Kafka Integration (done)
 13. Add Kafka + Zookeeper to docker-compose
 14. Add `pkg/kafka` producer/consumer
 15. Portfolio Service publishes `portfolio.updated`
@@ -711,7 +711,10 @@ The work is split into phases. Each phase produces a working, testable increment
 30. On-demand training DAG
 31. End-to-end integration testing
 
-####  Phase 7: Add Prometeus + Grafana
+### Phase 7: Add Prometheus + Grafana (done)
+32. Prometheus + Grafana in docker-compose (`9090` / `3001`)
+33. Go services expose `/metrics` (Prometheus client: Go/process/build info)
+34. Grafana: provisioned Prometheus datasource + RiskOps overview dashboard
 
 ---
 

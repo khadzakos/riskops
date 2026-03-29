@@ -14,6 +14,7 @@ import (
 	"github.com/khadzakos/riskops/apps/market-data-service/internal/repository"
 	"github.com/khadzakos/riskops/apps/market-data-service/internal/service"
 	"github.com/khadzakos/riskops/pkg/httpserver"
+	"github.com/khadzakos/riskops/pkg/kafka"
 	"github.com/khadzakos/riskops/pkg/logger"
 	"github.com/khadzakos/riskops/pkg/postgres"
 	"github.com/khadzakos/riskops/pkg/swaggerui"
@@ -52,7 +53,10 @@ func main() {
 
 	// Services
 	returnsSvc := service.NewReturnsService(pricesRepo, log)
-	ingestSvc := service.NewIngestService(collectors, pricesRepo, creditRepo, logRepo, returnsSvc, log)
+	kp := kafka.NewProducer(kafka.ParseBrokers(cfg.KafkaBrokers))
+	defer func() { _ = kp.Close() }()
+
+	ingestSvc := service.NewIngestService(collectors, pricesRepo, creditRepo, logRepo, returnsSvc, kp, log)
 
 	// Handler
 	h := handler.NewMarketDataHandler(ingestSvc, pricesRepo, creditRepo, logRepo)

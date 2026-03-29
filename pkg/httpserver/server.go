@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -24,6 +25,7 @@ func NewRouter(log *zap.Logger, extra ...func(http.Handler) http.Handler) *chi.M
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	r.Handle("/metrics", promhttp.Handler())
 	return r
 }
 
@@ -74,6 +76,10 @@ func RunWithTimeouts(ctx context.Context, addr string, handler http.Handler, log
 func requestLogger(log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/metrics" || r.URL.Path == "/health" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			start := time.Now()
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
