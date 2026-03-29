@@ -99,11 +99,43 @@ services:
       - ./ui:/app
       - /app/node_modules
     environment:
-      # если понадобится подключаться к Postgres из фронта/прокси
+      VITE_API_BASE_URL: http://localhost:8081
+    depends_on:
+      - gateway
+
+  # ── Go Services ──────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/gateway/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      PORT: "8081"
+      LOG_LEVEL: info
+      PORTFOLIO_SERVICE_URL: http://portfolio-service:8082
+      MARKET_DATA_SERVICE_URL: http://market-data-service:8083
+      INFERENCE_SERVICE_URL: http://inference-service:8085
+      TRAINING_SERVICE_URL: http://training-service:8084
+    depends_on:
+      - portfolio-service
+
+  portfolio-service:
+    build:
+      context: .
+      dockerfile: apps/portfolio-service/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      PORT: "8082"
       DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
+      LOG_LEVEL: info
     depends_on:
       db:
         condition: service_healthy
+
+  # ── Python Services ─────────────
 
   pipelines:
     build:
@@ -117,23 +149,7 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_started
-    # utility container; used by `docker compose run --rm pipelines <cmd>`
     entrypoint: ["python", "-m", "riskops_pipelines"]
-
-  inference-service:
-    build:
-      context: ./apps/inference-service
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
-      MLFLOW_TRACKING_URI: http://mlflow:3000
-    depends_on:
-      db:
-        condition: service_healthy
-      mlflow:
-        condition: service_started
 
 volumes:
   postgres_data:
