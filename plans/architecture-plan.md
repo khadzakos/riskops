@@ -711,6 +711,8 @@ The work is split into phases. Each phase produces a working, testable increment
 30. On-demand training DAG
 31. End-to-end integration testing
 
+####  Phase 7: Add Prometeus + Grafana
+
 ---
 
 ## 14. File Tree Summary (what will be created)

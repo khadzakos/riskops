@@ -31,5 +31,15 @@ go.work.sum
 .idea/
 .vscode/
 
-API generated code
+# API generated code
 *.gen.go
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw

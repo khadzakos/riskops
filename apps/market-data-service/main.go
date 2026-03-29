@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/khadzakos/riskops/apps/market-data-service/internal/api"
 	"github.com/khadzakos/riskops/apps/market-data-service/internal/collector"
@@ -64,7 +65,10 @@ func main() {
 		log.Fatal("swagger ui", zap.Error(err))
 	}
 
-	if err := httpserver.Run(ctx, ":"+cfg.Port, router, log); err != nil {
+	timeouts := httpserver.DefaultTimeouts()
+	// Bulk ingest runs multiple collectors; responses are written only when ingestion finishes.
+	timeouts.WriteTimeout = 20 * time.Minute
+	if err := httpserver.RunWithTimeouts(ctx, ":"+cfg.Port, router, log, timeouts); err != nil {
 		log.Fatal("http server error", zap.Error(err))
 	}
 }

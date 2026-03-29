@@ -27,13 +27,31 @@ func NewRouter(log *zap.Logger, extra ...func(http.Handler) http.Handler) *chi.M
 	return r
 }
 
-func Run(ctx context.Context, addr string, handler http.Handler, log *zap.Logger) error {
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      handler,
+type ServerTimeouts struct {
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+
+func DefaultTimeouts() ServerTimeouts {
+	return ServerTimeouts{
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+}
+
+func Run(ctx context.Context, addr string, handler http.Handler, log *zap.Logger) error {
+	return RunWithTimeouts(ctx, addr, handler, log, DefaultTimeouts())
+}
+
+func RunWithTimeouts(ctx context.Context, addr string, handler http.Handler, log *zap.Logger, t ServerTimeouts) error {
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  t.ReadTimeout,
+		WriteTimeout: t.WriteTimeout,
+		IdleTimeout:  t.IdleTimeout,
 	}
 
 	errCh := make(chan error, 1)
