@@ -1,0 +1,456 @@
+openapi: "3.0.3"
+info:
+  title: Market Data Service API
+  version: 1.0.0
+  description: Collects, normalizes, and serves market price and credit portfolio data for RiskOps.
+
+servers:
+  - url: http://localhost:8081
+    description: Via API Gateway
+  - url: http://localhost:8083
+    description: Direct to market-data-service
+
+paths:
+  /api/market-data/ingest:
+    post:
+      operationId: triggerIngest
+      summary: Trigger data ingestion for a specific source and symbols
+      tags: [ingestion]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+      responses:
+        "200":
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/market-data/ingest/all:
+    post:
+      operationId: triggerIngestAll
+      summary: Trigger full ingestion across all configured sources
+      tags: [ingestion]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestAllRequest"
+      responses:
+        "200":
+          description: Ingestion results per source
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/IngestResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/market-data/prices:
+    get:
+      operationId: getPrices
+      summary: Get raw prices for symbols with optional date range filter
+      tags: [market-data]
+      parameters:
+        - name: symbols
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated list of ticker symbols (e.g. AAPL,MSFT)
+        - name: date_from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Start date (inclusive), format YYYY-MM-DD
+        - name: date_to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: End date (inclusive), format YYYY-MM-DD
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by data source (yahoo, moex, synthetic)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1000
+            minimum: 1
+            maximum: 10000
+          description: Maximum number of records to return
+      responses:
+        "200":
+          description: Array of raw price records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RawPrice"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/market-data/returns:
+    get:
+      operationId: getReturns
+      summary: Get processed returns for symbols
+      tags: [market-data]
+      parameters:
+        - name: symbols
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated list of ticker symbols
+        - name: date_from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1000
+            minimum: 1
+            maximum: 10000
+      responses:
+        "200":
+          description: Array of processed return records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProcessedReturn"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/market-data/credit:
+    get:
+      operationId: getCreditData
+      summary: Get credit portfolio data
+      tags: [market-data]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by source (synthetic)
+        - name: is_default
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Filter by default status
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1000
+            minimum: 1
+            maximum: 10000
+      responses:
+        "200":
+          description: Array of credit records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CreditRecord"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/market-data/sources:
+    get:
+      operationId: getSources
+      summary: List available data sources and their status
+      tags: [ingestion]
+      responses:
+        "200":
+          description: Array of data source descriptors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DataSource"
+
+  /api/market-data/ingestion-log:
+    get:
+      operationId: getIngestionLog
+      summary: View ingestion history and errors
+      tags: [ingestion]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [completed, failed]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: Array of ingestion log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/IngestionLog"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  schemas:
+    IngestRequest:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+          description: Data source identifier (yahoo, moex, synthetic, credit_synthetic)
+          enum: [yahoo, moex, synthetic, credit_synthetic]
+        symbols:
+          type: array
+          items:
+            type: string
+          description: Ticker symbols to ingest (required for yahoo/moex/synthetic)
+        date_from:
+          type: string
+          format: date
+          description: Start date for historical data (YYYY-MM-DD)
+        date_to:
+          type: string
+          format: date
+          description: End date for historical data (YYYY-MM-DD)
+        count:
+          type: integer
+          description: Number of records to generate (for synthetic sources)
+          minimum: 1
+          maximum: 100000
+
+    IngestAllRequest:
+      type: object
+      properties:
+        date_from:
+          type: string
+          format: date
+        date_to:
+          type: string
+          format: date
+
+    IngestResponse:
+      type: object
+      required: [source, data_type, rows_ingested, status]
+      properties:
+        source:
+          type: string
+        data_type:
+          type: string
+        rows_ingested:
+          type: integer
+        status:
+          type: string
+          enum: [completed, failed]
+        error:
+          type: string
+
+    RawPrice:
+      type: object
+      required: [symbol, price_date, close, ingested_at]
+      properties:
+        symbol:
+          type: string
+        price_date:
+          type: string
+          format: date
+        close:
+          type: number
+          format: double
+        currency:
+          type: string
+        source:
+          type: string
+        ingested_at:
+          type: string
+          format: date-time
+
+    ProcessedReturn:
+      type: object
+      required: [symbol, price_date, ret, computed_at]
+      properties:
+        symbol:
+          type: string
+        price_date:
+          type: string
+          format: date
+        ret:
+          type: number
+          format: double
+        computed_at:
+          type: string
+          format: date-time
+
+    CreditRecord:
+      type: object
+      required: [id, loan_id, borrower_id, loan_amount, interest_rate, term_months, credit_score, is_default, origination_date, source, ingested_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        loan_id:
+          type: string
+        borrower_id:
+          type: string
+        loan_amount:
+          type: number
+          format: double
+        interest_rate:
+          type: number
+          format: double
+        term_months:
+          type: integer
+        credit_score:
+          type: integer
+        ltv_ratio:
+          type: number
+          format: double
+        dti_ratio:
+          type: number
+          format: double
+        is_default:
+          type: boolean
+        default_date:
+          type: string
+          format: date
+        origination_date:
+          type: string
+          format: date
+        sector:
+          type: string
+        source:
+          type: string
+        ingested_at:
+          type: string
+          format: date-time
+
+    DataSource:
+      type: object
+      required: [name, data_type, description]
+      properties:
+        name:
+          type: string
+        data_type:
+          type: string
+        description:
+          type: string
+        schedule:
+          type: string
+
+    IngestionLog:
+      type: object
+      required: [id, source, data_type, symbols, date_from, date_to, rows_ingested, status, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        source:
+          type: string
+        data_type:
+          type: string
+        symbols:
+          type: array
+          items:
+            type: string
+        date_from:
+          type: string
+          format: date
+        date_to:
+          type: string
+          format: date
+        rows_ingested:
+          type: integer
+        status:
+          type: string
+        error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

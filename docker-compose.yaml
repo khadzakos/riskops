@@ -120,6 +120,7 @@ services:
       TRAINING_SERVICE_URL: http://training-service:8084
     depends_on:
       - portfolio-service
+      - market-data-service
 
   portfolio-service:
     build:
@@ -129,6 +130,23 @@ services:
       - "8082:8082"
     environment:
       PORT: "8082"
+      DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
+      LOG_LEVEL: info
+    depends_on:
+      db:
+        condition: service_healthy
+
+  market-data-service:
+    build:
+      context: .
+      dockerfile: apps/market-data-service/Dockerfile
+    ports:
+      - "8083:8083"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      PORT: "8083"
       DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
       LOG_LEVEL: info
     depends_on:

@@ -70,8 +70,8 @@ type IngestionLog struct {
 	Source       string    `json:"source"`
 	DataType     string    `json:"data_type"`
 	Symbols      []string  `json:"symbols"`
-	DateFrom     string    `json:"date_from"`
-	DateTo       string    `json:"date_to"`
+	DateFrom     time.Time `json:"date_from"`
+	DateTo       time.Time `json:"date_to"`
 	RowsIngested int       `json:"rows_ingested"`
 	Status       string    `json:"status"`
 	ErrorMessage string    `json:"error_message,omitempty"`

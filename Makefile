@@ -22,7 +22,10 @@ OAPI_GEN_CFG := api/oapi-codegen.yaml
 generate-portfolio:
 	$(OAPI_CODEGEN) --config $(OAPI_GEN_CFG) -package api -o apps/portfolio-service/internal/api/api.gen.go apps/portfolio-service/openapi.yaml
 
-generate: generate-portfolio
+generate-market-data:
+	$(OAPI_CODEGEN) --config $(OAPI_GEN_CFG) -package api -o apps/market-data-service/internal/api/api.gen.go apps/market-data-service/openapi.yaml
+
+generate: generate-portfolio generate-market-data
 
 # ── Go builds ──────────────────────────────────────────────
 
@@ -32,7 +35,10 @@ build-gateway:
 build-portfolio:
 	go build -o bin/portfolio-service ./apps/portfolio-service
 
-build-all: build-gateway build-portfolio
+build-market-data:
+	go build -o bin/market-data-service ./apps/market-data-service
+
+build-all: build-gateway build-portfolio build-market-data
 
 tidy:
 	go mod tidy
