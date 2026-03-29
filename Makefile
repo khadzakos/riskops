@@ -13,6 +13,17 @@ logs:
 ps:
 	docker-compose ps
 
+# ── Code generation ────────────────────────────────────────
+
+OAPI_CODEGEN := $(shell go env GOPATH)/bin/oapi-codegen
+# Shared config: api/oapi-codegen.yaml (generate:* only). Per service: -o, -package, spec path.
+OAPI_GEN_CFG := api/oapi-codegen.yaml
+
+generate-portfolio:
+	$(OAPI_CODEGEN) --config $(OAPI_GEN_CFG) -package api -o apps/portfolio-service/internal/api/api.gen.go apps/portfolio-service/openapi.yaml
+
+generate: generate-portfolio
+
 # ── Go builds ──────────────────────────────────────────────
 
 build-gateway:

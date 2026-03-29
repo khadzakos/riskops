@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"os/signal"
 	"syscall"
 
+	"github.com/khadzakos/riskops/apps/portfolio-service/internal/api"
 	"github.com/khadzakos/riskops/apps/portfolio-service/internal/config"
 	"github.com/khadzakos/riskops/apps/portfolio-service/internal/handler"
 	"github.com/khadzakos/riskops/apps/portfolio-service/internal/repository"
@@ -12,8 +14,12 @@ import (
 	"github.com/khadzakos/riskops/pkg/httpserver"
 	"github.com/khadzakos/riskops/pkg/logger"
 	"github.com/khadzakos/riskops/pkg/postgres"
+	"github.com/khadzakos/riskops/pkg/swaggerui"
 	"go.uber.org/zap"
 )
+
+//go:embed openapi.yaml
+var specBytes []byte
 
 func main() {
 	cfg := config.Load()
@@ -31,10 +37,14 @@ func main() {
 
 	repo := repository.NewPortfolioRepo(pool)
 	svc := service.NewPortfolioService(repo, log)
-
-	router := httpserver.NewRouter(log)
 	h := handler.NewPortfolioHandler(svc)
-	h.Register(router)
+
+	strictHandler := api.NewStrictHandler(h, nil)
+	router := httpserver.NewRouter(log)
+	api.HandlerFromMux(strictHandler, router)
+	if err := swaggerui.Register(router, "portfolio-service", specBytes); err != nil {
+		log.Fatal("swagger ui", zap.Error(err))
+	}
 
 	if err := httpserver.Run(ctx, ":"+cfg.Port, router, log); err != nil {
 		log.Fatal("http server error", zap.Error(err))

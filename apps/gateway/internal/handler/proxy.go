@@ -37,6 +37,8 @@ func NewProxyHandler(log *zap.Logger, portfolioURL, marketURL, inferenceURL, tra
 func (h *ProxyHandler) Register(r chi.Router) {
 	r.Handle("/api/portfolios/*", h.reverseProxy(h.portfolioURL))
 	r.Handle("/api/portfolios", h.reverseProxy(h.portfolioURL))
+	r.Handle("/api/portfolio-service/openapi.yaml", h.reverseProxy(h.portfolioURL))
+	r.Handle("/api/portfolio-service/docs", h.reverseProxy(h.portfolioURL))
 	r.Handle("/api/market-data/*", h.reverseProxy(h.marketURL))
 	r.Handle("/api/market-data", h.reverseProxy(h.marketURL))
 	r.Handle("/api/risk/predict/*", h.reverseProxy(h.inferenceURL))
