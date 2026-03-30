@@ -242,6 +242,39 @@ services:
 
   # ── Python Services ─────────────
 
+  training-service:
+    build:
+      context: ./apps/training-service
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      PORT: "8084"
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
+      MLFLOW_TRACKING_URI: http://mlflow:3000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: riskops
+      AWS_SECRET_ACCESS_KEY: riskops123
+      S3_BUCKET_MODELS: riskops-models
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CONSUMER_GROUP: training-service
+      KAFKA_TOPIC_MARKET_DATA: market.data.ingested
+      KAFKA_TOPIC_MODEL_TRAINED: model.trained
+      DEFAULT_LOOKBACK_DAYS: "252"
+      DEFAULT_ALPHA: "0.99"
+      DEFAULT_HORIZON_DAYS: "1"
+      MONTE_CARLO_SIMULATIONS: "10000"
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
   pipelines:
     build:
       context: ./apps/pipelines

@@ -690,12 +690,14 @@ The work is split into phases. Each phase produces a working, testable increment
 15. Portfolio Service publishes `portfolio.updated`
 16. Market Data Service publishes `market.data.ingested`
 
-### Phase 4: ML Training Service
+### Phase 4: ML Training Service (done)
 17. Build Training Service (FastAPI)
 18. Implement GARCH model training pipeline
 19. Implement Monte Carlo simulation pipeline
 20. MLflow integration (log experiments, register models)
 21. Kafka consumer for `market.data.ingested`
+
+STUDY HOW THIS MODELS WORKS
 
 ### Phase 5: Inference Service
 22. Build Inference Service (FastAPI)
