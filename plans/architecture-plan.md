@@ -699,14 +699,14 @@ The work is split into phases. Each phase produces a working, testable increment
 
 STUDY HOW THIS MODELS WORKS
 
-### Phase 5: Inference Service
+### Phase 5: Inference Service (done)
 22. Build Inference Service (FastAPI)
 23. Model loading from MLflow
 24. Risk prediction endpoint (VaR, CVaR, volatility)
 25. Kafka consumer for `portfolio.updated` and `model.trained`
 26. Store results in `risk_results` table
 
-### Phase 6: Airflow DAGs + Integration
+### Phase 6: Airflow DAGs + Integration (done)
 27. Update Airflow DAGs for new service architecture
 28. Daily risk pipeline DAG
 29. Market data ingestion DAGs (MOEX + Yahoo schedules)
@@ -940,19 +940,6 @@ curl http://localhost:8084/api/risk/models
 
 ### Critical Issues (block MVP)
 
-#### 1. Inference Service is missing
-The gateway already routes `INFERENCE_SERVICE_URL: http://inference-service:8085` but no service exists.
-The entire ML pipeline has no output endpoint. **Must be built first.**
-
-#### 2. GARCH CVaR uses Normal distribution regardless of `dist` parameter
-**File:** `apps/training-service/training_service/models/garch.py:114`
-```python
-# BUG: always uses Normal even when dist='t'
-z_alpha = stats.norm.ppf(1.0 - alpha)
-```
-Financial returns have fat tails. Using Normal distribution **underestimates tail risk**.
-**Fix:** use `stats.t.ppf` with fitted degrees of freedom when `dist='t'` or `dist='skewt'`.
-
 #### 3. Backtest is in-sample (not a real backtest)
 **File:** `apps/training-service/training_service/models/garch.py:123`
 ```python
@@ -963,21 +950,6 @@ coverage_ratio = float(exceedances / len(returns))
 A real backtest requires out-of-sample rolling window evaluation with formal statistical tests.
 
 ### Significant Issues (degrade quality)
-
-#### 4. In-memory job registry lost on restart
-**File:** `apps/training-service/training_service/api/routes.py:30`
-```python
-_jobs: dict[str, dict[str, Any]] = {}  # lost on container restart
-```
-**Fix:** persist job state to Postgres `training_jobs` table.
-
-#### 5. Monte Carlo does not save a loadable model artifact
-**File:** `apps/training-service/training_service/pipelines/train.py:322`
-```python
-mc_artifact = {"params": ..., "metrics": ...}  # just JSON, not a model
-```
-The Inference Service cannot "load" Monte Carlo from MLflow as a model.
-**Fix:** wrap MC parameters in a `mlflow.pyfunc` model class with a `predict()` method.
 
 #### 6. Double model registration (MLflow + Postgres) without sync
 `model_registry` table in Postgres can diverge from MLflow Model Registry.

@@ -126,7 +126,7 @@ func (r *PortfolioRepo) DeletePosition(ctx context.Context, portfolioID int64, s
 
 func (r *PortfolioRepo) LatestRisk(ctx context.Context, portfolioID int64) ([]models.RiskResult, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, portfolio_id, asof_date, horizon_days, alpha, method, metric, value, model_version, created_at
+		`SELECT id, portfolio_id, asof_date::text, horizon_days, alpha, method, metric, value, model_version, created_at
 		 FROM risk_results
 		 WHERE portfolio_id = $1
 		 ORDER BY created_at DESC
@@ -153,7 +153,7 @@ func (r *PortfolioRepo) RiskHistory(ctx context.Context, portfolioID int64, limi
 		limit = 100
 	}
 	rows, err := r.db.Query(ctx,
-		`SELECT id, portfolio_id, asof_date, horizon_days, alpha, method, metric, value, model_version, created_at
+		`SELECT id, portfolio_id, asof_date::text, horizon_days, alpha, method, metric, value, model_version, created_at
 		 FROM risk_results
 		 WHERE portfolio_id = $1
 		 ORDER BY created_at DESC

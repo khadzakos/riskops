@@ -117,7 +117,7 @@ func (r *CreditRepo) GetCredit(ctx context.Context, source string, isDefault *bo
 	query := fmt.Sprintf(`
 		SELECT id, loan_id, borrower_id, loan_amount, interest_rate,
 		       term_months, credit_score, ltv_ratio, dti_ratio,
-		       is_default, default_date, origination_date, sector, source, ingested_at
+		       is_default, default_date::text, origination_date::text, sector, source, ingested_at
 		FROM credit_data
 		%s
 		ORDER BY id DESC

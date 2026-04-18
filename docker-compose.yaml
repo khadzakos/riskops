@@ -314,7 +314,8 @@ services:
     ports:
       - "3002:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://gateway:8081
+      API_URL: http://gateway:8081
+      NEXT_PUBLIC_API_URL: http://localhost:8081
     depends_on:
       - gateway
     healthcheck:

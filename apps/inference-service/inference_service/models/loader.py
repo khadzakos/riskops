@@ -138,42 +138,28 @@ def load_garch_model(client: MlflowClient, version: str) -> Optional[LoadedModel
 
 
 def load_montecarlo_model(client: MlflowClient, version: str) -> Optional[LoadedModel]:
-    """Load a Monte Carlo model artifact from MLflow.
+    """Load a Monte Carlo pyfunc model from MLflow.
 
-    The training service stores GBM params as a JSON artifact under `model/`.
+    The training service stores the model as a proper mlflow.pyfunc model
+    (MonteCarloModel instance) under the 'model/' artifact path.
+    We load it with mlflow.pyfunc.load_model() so the Inference Service can
+    call pyfunc_model.predict(input_df) directly.
     """
     try:
-        import json
+        import mlflow.pyfunc
 
         mv = client.get_model_version(MONTECARLO_MODEL_NAME, version)
         run_id = mv.run_id
 
-        local_dir = _download_artifact(client, run_id, "model")
-
-        json_path: Optional[str] = None
-        if os.path.isfile(local_dir) and local_dir.endswith(".json"):
-            json_path = local_dir
-        elif os.path.isdir(local_dir):
-            for fname in os.listdir(local_dir):
-                if fname.endswith(".json"):
-                    json_path = os.path.join(local_dir, fname)
-                    break
-
-        if json_path is None:
-            logger.warning(
-                "No .json file found in Monte Carlo model artifact for version %s",
-                version,
-            )
-            return None
-
-        with open(json_path) as f:
-            mc_artifact = json.load(f)
+        # Load the pyfunc model from the MLflow run URI
+        model_uri = f"runs:/{run_id}/model"
+        pyfunc_model = mlflow.pyfunc.load_model(model_uri)
 
         run = client.get_run(run_id)
         metrics = dict(run.data.metrics)
 
         logger.info(
-            "Loaded Monte Carlo model version=%s run_id=%s  VaR=%.6f  CVaR=%.6f",
+            "Loaded Monte Carlo pyfunc model version=%s run_id=%s  VaR=%.6f  CVaR=%.6f",
             version, run_id,
             metrics.get("var", float("nan")),
             metrics.get("cvar", float("nan")),
@@ -184,12 +170,12 @@ def load_montecarlo_model(client: MlflowClient, version: str) -> Optional[Loaded
             model_name=MONTECARLO_MODEL_NAME,
             model_version=version,
             run_id=run_id,
-            artifact=mc_artifact,
+            artifact=pyfunc_model,   # mlflow.pyfunc.PyFuncModel — has .predict()
             metrics=metrics,
         )
 
     except Exception as exc:
-        logger.error("Failed to load Monte Carlo model version=%s: %s", version, exc)
+        logger.error("Failed to load Monte Carlo pyfunc model version=%s: %s", version, exc)
         return None
 
 

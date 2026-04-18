@@ -2,20 +2,26 @@
 
 Endpoints:
   POST /api/risk/train              — trigger model training (async background task)
-  GET  /api/risk/train/status/{id}  — get training run status from MLflow
-  GET  /api/risk/models             — list registered models from MLflow + model_registry
+  GET  /api/risk/train/status/{id}  — get training run status from Postgres training_jobs
+  GET  /api/risk/train/run/{run_id} — get MLflow run details by run_id
+  GET  /api/risk/models             — list registered models from model_registry
 """
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import mlflow
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from ..config import get_settings
+from ..db import get_engine
 from ..pipelines.train import TrainRequest, TrainResult, run_training
 
 logger = logging.getLogger(__name__)
@@ -25,9 +31,105 @@ router = APIRouter(prefix="/api/risk")
 # Thread pool for background training (keeps FastAPI responsive)
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trainer")
 
-# In-memory job registry (run_id → status dict).
-# In production this would be backed by Redis or Postgres.
-_jobs: dict[str, dict[str, Any]] = {}
+
+# ---------------------------------------------------------------------------
+# Postgres job state helpers
+# ---------------------------------------------------------------------------
+
+def _job_create(job_id: str, req: TrainRequest) -> None:
+    """Insert a new training job row in Postgres (status=queued)."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO training_jobs
+                    (job_id, status, model_type, symbols, alpha, horizon_days,
+                     lookback_days, n_simulations, created_at, updated_at)
+                VALUES
+                    (:job_id, 'queued', :model_type, :symbols, :alpha,
+                     :horizon_days, :lookback_days, :n_simulations,
+                     NOW(), NOW())
+                """
+            ),
+            {
+                "job_id": job_id,
+                "model_type": req.model_type,
+                "symbols": req.symbols,
+                "alpha": req.alpha,
+                "horizon_days": req.horizon_days,
+                "lookback_days": req.lookback_days,
+                "n_simulations": req.n_simulations,
+            },
+        )
+
+
+def _job_set_running(job_id: str) -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE training_jobs SET status='running', updated_at=NOW() WHERE job_id=:job_id"
+            ),
+            {"job_id": job_id},
+        )
+
+
+def _job_set_completed(job_id: str, results: list[dict]) -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE training_jobs
+                SET status='completed', results=cast(:results as jsonb), updated_at=NOW()
+                WHERE job_id=:job_id
+                """
+            ),
+            {"job_id": job_id, "results": json.dumps(results)},
+        )
+
+
+def _job_set_failed(job_id: str, error: str) -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE training_jobs
+                SET status='failed', error=:error, updated_at=NOW()
+                WHERE job_id=:job_id
+                """
+            ),
+            {"job_id": job_id, "error": error},
+        )
+
+
+def _job_get(job_id: str) -> Optional[dict[str, Any]]:
+    """Fetch a job row from Postgres. Returns None if not found."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT job_id, status, model_type, results, error, created_at, updated_at
+                FROM training_jobs
+                WHERE job_id = :job_id
+                """
+            ),
+            {"job_id": job_id},
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "job_id": row[0],
+        "status": row[1],
+        "model_type": row[2],
+        "results": row[3],   # already a dict/list from JSONB
+        "error": row[4],
+        "created_at": str(row[5]),
+        "updated_at": str(row[6]),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -94,31 +196,29 @@ class RunStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _training_worker(job_id: str, req: TrainRequest) -> None:
-    """Runs in a thread pool. Updates _jobs dict with progress."""
-    _jobs[job_id] = {"status": "running", "results": []}
+    """Runs in a thread pool. Persists progress to Postgres training_jobs table."""
+    _job_set_running(job_id)
     try:
         results = run_training(req)
-        _jobs[job_id] = {
-            "status": "completed",
-            "results": [
-                {
-                    "run_id": r.run_id,
-                    "model_type": r.model_type,
-                    "model_name": r.model_name,
-                    "model_version": r.model_version,
-                    "var": r.var,
-                    "cvar": r.cvar,
-                    "volatility": r.volatility,
-                    "status": r.status,
-                    "error": r.error,
-                }
-                for r in results
-            ],
-        }
+        serialised = [
+            {
+                "run_id": r.run_id,
+                "model_type": r.model_type,
+                "model_name": r.model_name,
+                "model_version": r.model_version,
+                "var": r.var,
+                "cvar": r.cvar,
+                "volatility": r.volatility,
+                "status": r.status,
+                "error": r.error,
+            }
+            for r in results
+        ]
+        _job_set_completed(job_id, serialised)
         logger.info("Training job %s completed with %d results", job_id, len(results))
     except Exception as exc:
         logger.exception("Training job %s failed: %s", job_id, exc)
-        _jobs[job_id] = {"status": "failed", "error": str(exc), "results": []}
+        _job_set_failed(job_id, str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +230,8 @@ async def trigger_training(body: TrainRequestBody, background_tasks: BackgroundT
     """Trigger model training asynchronously.
 
     Returns immediately with a job_id. Poll GET /api/risk/train/status/{job_id}
-    to check progress.
+    to check progress. Job state is persisted in Postgres — survives restarts.
     """
-    cfg = get_settings()
-
     req = TrainRequest(
         symbols=body.symbols,
         model_type=body.model_type,
@@ -144,15 +242,18 @@ async def trigger_training(body: TrainRequestBody, background_tasks: BackgroundT
         n_simulations=body.n_simulations,
     )
 
-    # Generate a job ID (will be replaced by actual run_id once training starts)
-    import uuid
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "queued", "results": []}
+
+    # Persist job row before starting the background task
+    _job_create(job_id, req)
 
     # Submit to thread pool (non-blocking)
     background_tasks.add_task(_training_worker, job_id, req)
 
-    logger.info("Queued training job %s: model_type=%s symbols=%s", job_id, body.model_type, body.symbols)
+    logger.info(
+        "Queued training job %s: model_type=%s symbols=%s",
+        job_id, body.model_type, body.symbols,
+    )
 
     return TrainResponse(
         job_id=job_id,
@@ -163,15 +264,15 @@ async def trigger_training(body: TrainRequestBody, background_tasks: BackgroundT
 
 @router.get("/train/status/{job_id}", response_model=TrainResponse)
 async def get_training_status(job_id: str) -> TrainResponse:
-    """Get the status of a training job by its job_id."""
-    job = _jobs.get(job_id)
+    """Get the status of a training job by its job_id (read from Postgres)."""
+    job = _job_get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     return TrainResponse(
         job_id=job_id,
-        status=job.get("status", "unknown"),
-        message=job.get("error", ""),
+        status=job["status"],
+        message=job.get("error") or "",
         results=job.get("results"),
     )
 
@@ -205,9 +306,6 @@ async def get_run_status(run_id: str) -> RunStatusResponse:
 @router.get("/models", response_model=ModelsResponse)
 async def list_models() -> ModelsResponse:
     """List all registered models from the Postgres model_registry table."""
-    from sqlalchemy import text
-    from ..db import get_engine
-
     engine = get_engine()
     with engine.connect() as conn:
         rows = conn.execute(
@@ -241,5 +339,4 @@ async def list_models() -> ModelsResponse:
 # ---------------------------------------------------------------------------
 
 def _ms_to_iso(ms: int) -> str:
-    from datetime import datetime, timezone
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()

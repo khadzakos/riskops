@@ -3,10 +3,11 @@
 Supports three methods:
   1. garch      — uses the loaded ARCHModelResult to forecast conditional volatility,
                   then derives parametric VaR/CVaR.
-  2. montecarlo — re-runs GBM simulation using stored params from the MC artifact.
+  2. montecarlo — calls the loaded mlflow.pyfunc MonteCarloModel.predict().
   3. historical — non-parametric empirical quantile from processed_returns (fallback).
 
-All methods return a unified PredictionResult dataclass.
+All methods return a unified PredictionResult dataclass that includes both core
+VaR metrics and additional risk metrics (Max Drawdown, Sharpe, Sortino, Beta).
 """
 from __future__ import annotations
 
@@ -22,6 +23,48 @@ from sqlalchemy import text
 
 from ..db import get_engine
 from .loader import LoadedModel, ModelRegistry
+
+
+# ---------------------------------------------------------------------------
+# Additional risk metrics (inline — avoids cross-service import)
+# ---------------------------------------------------------------------------
+
+_TRADING_DAYS = 252
+
+
+def _max_drawdown(returns: np.ndarray) -> float:
+    if len(returns) == 0:
+        return 0.0
+    cumulative = np.cumprod(1.0 + returns)
+    running_max = np.maximum.accumulate(cumulative)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        drawdown = np.where(running_max > 0, (cumulative - running_max) / running_max, 0.0)
+    return float(drawdown.min())
+
+
+def _sharpe_ratio(returns: np.ndarray, risk_free_rate: float = 0.0) -> Optional[float]:
+    if len(returns) < 2:
+        return None
+    rf_daily = risk_free_rate / _TRADING_DAYS
+    excess = returns - rf_daily
+    std = float(np.std(excess, ddof=1))
+    if std == 0.0:
+        return None
+    return float(np.mean(excess) / std * np.sqrt(_TRADING_DAYS))
+
+
+def _sortino_ratio(returns: np.ndarray, risk_free_rate: float = 0.0) -> Optional[float]:
+    if len(returns) < 2:
+        return None
+    rf_daily = risk_free_rate / _TRADING_DAYS
+    excess = returns - rf_daily
+    downside = excess[excess < 0.0]
+    if len(downside) == 0:
+        return None
+    downside_std = float(np.sqrt(np.mean(downside ** 2)))
+    if downside_std == 0.0:
+        return None
+    return float(np.mean(excess) / downside_std * np.sqrt(_TRADING_DAYS))
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +84,10 @@ class PredictionResult:
     cvar: float           # positive loss number
     volatility: float     # annualised
     model_version: str
+    max_drawdown: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    sortino_ratio: Optional[float] = None
+    beta_to_benchmark: Optional[float] = None
     computed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -149,9 +196,13 @@ def predict_historical(
     cvar = float(-tail.mean()) if len(tail) > 0 else var
     vol = float(np.std(port_rets, ddof=1) * np.sqrt(252 / horizon_days))
 
+    mdd = _max_drawdown(port_rets)
+    sharpe = _sharpe_ratio(port_rets)
+    sortino = _sortino_ratio(port_rets)
+
     logger.info(
-        "Historical prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f",
-        portfolio_id, var, cvar, vol,
+        "Historical prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f",
+        portfolio_id, var, cvar, vol, mdd, sharpe or float("nan"),
     )
 
     return PredictionResult(
@@ -163,6 +214,9 @@ def predict_historical(
         var=var,
         cvar=cvar,
         volatility=vol,
+        max_drawdown=mdd,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
         model_version="historical-v1",
     )
 
@@ -196,9 +250,15 @@ def predict_garch(
     pdf_z = stats.norm.pdf(z_alpha)
     cvar = float(pdf_z / (1.0 - alpha) * cond_vol)
 
+    # Additional metrics from historical returns (needed for MDD, Sharpe, Sortino)
+    port_rets, _ = _load_portfolio_returns(portfolio_id, lookback_days)
+    mdd = _max_drawdown(port_rets)
+    sharpe = _sharpe_ratio(port_rets)
+    sortino = _sortino_ratio(port_rets)
+
     logger.info(
-        "GARCH prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  model_v=%s",
-        portfolio_id, var, cvar, vol_annualised, model.model_version,
+        "GARCH prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  model_v=%s",
+        portfolio_id, var, cvar, vol_annualised, mdd, sharpe or float("nan"), model.model_version,
     )
 
     return PredictionResult(
@@ -210,6 +270,9 @@ def predict_garch(
         var=var,
         cvar=cvar,
         volatility=vol_annualised,
+        max_drawdown=mdd,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
         model_version=f"garch-v{model.model_version}",
     )
 
@@ -226,38 +289,64 @@ def predict_montecarlo(
     lookback_days: int = 252,
     n_simulations: int = 10_000,
 ) -> PredictionResult:
-    """VaR/CVaR from Monte Carlo GBM simulation using stored model params.
+    """VaR/CVaR from Monte Carlo GBM simulation using the loaded pyfunc model.
 
-    The MC artifact stores the params dict from the training run.
-    We re-run the simulation using the stored mu/sigma (or re-estimate from
-    current portfolio returns if the artifact only has summary metrics).
+    The artifact is an mlflow.pyfunc.PyFuncModel (MonteCarloModel) that was
+    trained on historical portfolio returns. We call pyfunc_model.predict()
+    with the desired simulation parameters.
+
+    Falls back to re-estimating GBM params from current portfolio returns if
+    the artifact is not a pyfunc model (e.g. old JSON-format artifact).
     """
-    # Re-estimate GBM params from current portfolio returns for freshness
-    port_rets, _ = _load_portfolio_returns(portfolio_id, lookback_days)
+    import pandas as pd
 
-    sigma = float(np.std(port_rets, ddof=1))
-    mu = float(np.mean(port_rets)) + 0.5 * sigma ** 2
+    pyfunc_model = model.artifact  # mlflow.pyfunc.PyFuncModel
 
-    rng = np.random.default_rng(42)
-    dt = 1.0
-    drift = (mu - 0.5 * sigma ** 2) * dt
-    diffusion = sigma * np.sqrt(dt)
+    # Build input DataFrame for the pyfunc model
+    input_df = pd.DataFrame([{
+        "n_simulations": n_simulations,
+        "horizon_days": horizon_days,
+        "alpha": alpha,
+    }])
 
-    daily_log_returns = rng.normal(
-        loc=drift, scale=diffusion, size=(n_simulations, horizon_days)
-    )
-    total_log_returns = daily_log_returns.sum(axis=1)
-    simulated = np.exp(total_log_returns) - 1.0
+    try:
+        output_df = pyfunc_model.predict(input_df)
+        var = float(output_df["var"].iloc[0])
+        cvar = float(output_df["cvar"].iloc[0])
+        vol = float(output_df["volatility"].iloc[0])
+    except Exception as exc:
+        # Fallback: re-estimate from current portfolio returns
+        logger.warning(
+            "pyfunc predict() failed (%s) — falling back to re-estimation for portfolio %d",
+            exc, portfolio_id,
+        )
+        port_rets, _ = _load_portfolio_returns(portfolio_id, lookback_days)
+        sigma = float(np.std(port_rets, ddof=1))
+        mu = float(np.mean(port_rets)) + 0.5 * sigma ** 2
+        rng = np.random.default_rng(42)
+        dt = 1.0
+        drift = (mu - 0.5 * sigma ** 2) * dt
+        diffusion = sigma * np.sqrt(dt)
+        daily_log_returns = rng.normal(
+            loc=drift, scale=diffusion, size=(n_simulations, horizon_days)
+        )
+        total_log_returns = daily_log_returns.sum(axis=1)
+        simulated = np.exp(total_log_returns) - 1.0
+        var_quantile = np.quantile(simulated, 1.0 - alpha)
+        var = float(-var_quantile)
+        tail = simulated[simulated <= var_quantile]
+        cvar = float(-tail.mean()) if len(tail) > 0 else var
+        vol = float(np.std(simulated, ddof=1) * np.sqrt(252 / horizon_days))
 
-    var_quantile = np.quantile(simulated, 1.0 - alpha)
-    var = float(-var_quantile)
-    tail = simulated[simulated <= var_quantile]
-    cvar = float(-tail.mean()) if len(tail) > 0 else var
-    vol = float(np.std(simulated, ddof=1) * np.sqrt(252 / horizon_days))
+    # Additional metrics from historical returns
+    port_rets_hist, _ = _load_portfolio_returns(portfolio_id, lookback_days)
+    mdd = _max_drawdown(port_rets_hist)
+    sharpe = _sharpe_ratio(port_rets_hist)
+    sortino = _sortino_ratio(port_rets_hist)
 
     logger.info(
-        "Monte Carlo prediction: portfolio=%d  n=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  model_v=%s",
-        portfolio_id, n_simulations, var, cvar, vol, model.model_version,
+        "Monte Carlo prediction: portfolio=%d  n=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  model_v=%s",
+        portfolio_id, n_simulations, var, cvar, vol, mdd, sharpe or float("nan"), model.model_version,
     )
 
     return PredictionResult(
@@ -269,6 +358,9 @@ def predict_montecarlo(
         var=var,
         cvar=cvar,
         volatility=vol,
+        max_drawdown=mdd,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
         model_version=f"montecarlo-v{model.model_version}",
     )
 

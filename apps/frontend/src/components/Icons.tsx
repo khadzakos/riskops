@@ -155,18 +155,3 @@ export const Icons = {
     </Icon>
   ),
 };
-
-export const BrandLogo: React.FC = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M4 18L9 10L13 14L20 5" />
-    <circle cx="9" cy="10" r="1.5" fill="currentColor" stroke="none" />
-    <circle cx="13" cy="14" r="1.5" fill="currentColor" stroke="none" />
-  </svg>
-);

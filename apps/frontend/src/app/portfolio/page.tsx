@@ -6,12 +6,14 @@ import { LineChart, Histogram, Donut, makeBins, type LineSeries } from '@/compon
 import {
   portfolioApi,
   marketDataApi,
+  inferenceApi,
   extractMetric,
   groupByMetric,
   type Portfolio,
   type Position,
   type RiskResult,
   type ProcessedReturn,
+  type PredictResponse,
 } from '@/lib/api';
 
 const COLORS = ['var(--primary)', 'var(--accent)', '#6b8f71', '#c9a96e', '#8b6f47', '#4a6b3e'];
@@ -23,6 +25,7 @@ export default function PortfolioPage() {
   const [latestRisk, setLatestRisk] = useState<RiskResult[]>([]);
   const [riskHistory, setRiskHistory] = useState<RiskResult[]>([]);
   const [returns, setReturns] = useState<ProcessedReturn[]>([]);
+  const [predictResult, setPredictResult] = useState<PredictResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +57,15 @@ export default function PortfolioPage() {
       setPositions(pos);
       setLatestRisk(latest);
       setRiskHistory(history);
+
+      // Fetch full prediction result (includes new risk metrics)
+      try {
+        const pred = await inferenceApi.predict({ portfolio_id: id });
+        setPredictResult(pred);
+      } catch {
+        // Non-fatal: inference service may be unavailable
+        setPredictResult(null);
+      }
 
       // Load returns for all symbols in portfolio
       if (pos.length > 0) {
@@ -113,6 +125,19 @@ export default function PortfolioPage() {
   const varVal = extractMetric(latestRisk, 'var');
   const cvarVal = extractMetric(latestRisk, 'cvar');
   const volVal = extractMetric(latestRisk, 'volatility');
+
+  // New metrics from inference service predict response
+  const mddVal = predictResult?.max_drawdown ?? null;
+  const sharpeVal = predictResult?.sharpe_ratio ?? null;
+  const sortinoVal = predictResult?.sortino_ratio ?? null;
+  const betaVal = predictResult?.beta_to_benchmark ?? null;
+
+  // Color helpers for ratio-based metrics
+  const sharpeColor = sharpeVal === null ? 'var(--ink-4)' : sharpeVal >= 1 ? 'var(--good)' : sharpeVal >= 0 ? 'var(--warn)' : 'var(--crit)';
+  const sortinoColor = sortinoVal === null ? 'var(--ink-4)' : sortinoVal >= 1 ? 'var(--good)' : sortinoVal >= 0 ? 'var(--warn)' : 'var(--crit)';
+  const mddColor = mddVal === null ? 'var(--ink-4)' : mddVal > -0.1 ? 'var(--good)' : mddVal > -0.2 ? 'var(--warn)' : 'var(--crit)';
+  // Beta: ~1 = market-neutral, <1 = defensive, >1 = aggressive
+  const betaColor = betaVal === null ? 'var(--ink-4)' : betaVal >= 0.8 && betaVal <= 1.2 ? 'var(--accent)' : betaVal < 0.8 ? 'var(--good)' : 'var(--warn)';
 
   // Chart series
   const chartSeries: LineSeries[] = [];
@@ -178,11 +203,15 @@ export default function PortfolioPage() {
         ) : (
           <>
             {/* KPI strip */}
-            <div className="grid-4" style={{ marginBottom: 20 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 12, marginBottom: 20 }}>
               {[
                 { label: 'VaR (95%)', value: varVal !== null ? `${(varVal * 100).toFixed(2)}%` : null, color: 'var(--primary)' },
                 { label: 'CVaR (95%)', value: cvarVal !== null ? `${(cvarVal * 100).toFixed(2)}%` : null, color: 'var(--crit)' },
                 { label: 'Волатильность', value: volVal !== null ? `${(volVal * 100).toFixed(2)}%` : null, color: 'var(--accent)' },
+                { label: 'Max Drawdown', value: mddVal !== null ? `${(mddVal * 100).toFixed(2)}%` : null, color: mddColor },
+                { label: 'Sharpe', value: sharpeVal !== null ? sharpeVal.toFixed(2) : null, color: sharpeColor },
+                { label: 'Sortino', value: sortinoVal !== null ? sortinoVal.toFixed(2) : null, color: sortinoColor },
+                { label: 'Beta (β)', value: betaVal !== null ? betaVal.toFixed(2) : null, color: betaColor },
                 { label: 'Сумма весов', value: positions.length > 0 ? `${(totalWeight * 100).toFixed(1)}%` : null, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)' },
               ].map((kpi) => (
                 <div key={kpi.label} className="metric-card">

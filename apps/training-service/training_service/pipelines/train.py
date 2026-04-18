@@ -23,7 +23,9 @@ from sqlalchemy import text
 
 from ..config import get_settings
 from ..db import get_engine
+from ..metrics.risk_metrics import RiskMetrics, compute_all as compute_risk_metrics
 from ..models.garch import GARCHParams, GARCHResult, plot_garch_diagnostics, train_garch
+from ..models.mc_pyfunc import MonteCarloModel
 from ..models.montecarlo import MonteCarloParams, MonteCarloResult, plot_monte_carlo_distribution, run_monte_carlo
 
 logger = logging.getLogger(__name__)
@@ -193,9 +195,18 @@ def _train_garch_pipeline(
     with mlflow.start_run(run_name=run_name) as run:
         run_id = run.info.run_id
 
-        # Log params and metrics
+        # Compute additional risk metrics (Max Drawdown, Sharpe, Sortino, Beta)
+        extra_metrics = compute_risk_metrics(
+            returns=port_rets,
+            var=result.var,
+            cvar=result.cvar,
+            volatility=result.volatility,
+        )
+
+        # Log params and metrics (core + additional)
         mlflow.log_params({**result.to_mlflow_params(), "symbols": ",".join(req.symbols)})
-        mlflow.log_metrics(result.to_mlflow_metrics())
+        all_metrics = {**result.to_mlflow_metrics(), **extra_metrics.to_dict()}
+        mlflow.log_metrics(all_metrics)
 
         # Log diagnostic plot
         plot_bytes = plot_garch_diagnostics(result, symbol=",".join(req.symbols))
@@ -205,7 +216,7 @@ def _train_garch_pipeline(
         mlflow.log_artifact(tmp_plot, artifact_path="plots")
         os.unlink(tmp_plot)
 
-        # Log risk report JSON
+        # Log risk report JSON (extended with additional metrics)
         report = {
             "model_type": "garch",
             "symbols": req.symbols,
@@ -214,6 +225,10 @@ def _train_garch_pipeline(
             "var": result.var,
             "cvar": result.cvar,
             "volatility": result.volatility,
+            "max_drawdown": extra_metrics.max_drawdown,
+            "sharpe_ratio": extra_metrics.sharpe_ratio,
+            "sortino_ratio": extra_metrics.sortino_ratio,
+            "beta_to_benchmark": extra_metrics.beta_to_benchmark,
             "aic": result.aic,
             "bic": result.bic,
             "backtest_coverage_ratio": result.backtest_coverage_ratio,
@@ -237,17 +252,18 @@ def _train_garch_pipeline(
         # Register model version in MLflow Model Registry
         model_version_str = _register_mlflow_model(run_id, model_name)
 
-    # Register in Postgres model_registry
+    # Register in Postgres model_registry (store all metrics including additional ones)
     _register_model_in_db(
         model_name=model_name,
         model_version=model_version_str,
         mlflow_run_id=run_id,
-        metrics=result.to_mlflow_metrics(),
+        metrics=all_metrics,
     )
 
     logger.info(
-        "GARCH training complete: run_id=%s  VaR=%.6f  CVaR=%.6f",
+        "GARCH training complete: run_id=%s  VaR=%.6f  CVaR=%.6f  MDD=%.4f  Sharpe=%.3f",
         run_id, result.var, result.cvar,
+        extra_metrics.max_drawdown, extra_metrics.sharpe_ratio,
     )
 
     return TrainResult(
@@ -258,7 +274,7 @@ def _train_garch_pipeline(
         var=result.var,
         cvar=result.cvar,
         volatility=result.volatility,
-        metrics=result.to_mlflow_metrics(),
+        metrics=all_metrics,
     )
 
 
@@ -285,8 +301,17 @@ def _train_montecarlo_pipeline(
     with mlflow.start_run(run_name=run_name) as run:
         run_id = run.info.run_id
 
+        # Compute additional risk metrics (Max Drawdown, Sharpe, Sortino, Beta)
+        extra_metrics = compute_risk_metrics(
+            returns=port_rets,
+            var=result.var,
+            cvar=result.cvar,
+            volatility=result.volatility,
+        )
+
         mlflow.log_params({**result.to_mlflow_params(), "symbols": ",".join(req.symbols)})
-        mlflow.log_metrics(result.to_mlflow_metrics())
+        all_metrics = {**result.to_mlflow_metrics(), **extra_metrics.to_dict()}
+        mlflow.log_metrics(all_metrics)
 
         # Log distribution plot
         plot_bytes = plot_monte_carlo_distribution(result, symbol=",".join(req.symbols))
@@ -296,7 +321,7 @@ def _train_montecarlo_pipeline(
         mlflow.log_artifact(tmp_plot, artifact_path="plots")
         os.unlink(tmp_plot)
 
-        # Log risk report JSON
+        # Log risk report JSON (extended with additional metrics)
         report = {
             "model_type": "montecarlo",
             "symbols": req.symbols,
@@ -306,6 +331,10 @@ def _train_montecarlo_pipeline(
             "var": result.var,
             "cvar": result.cvar,
             "volatility": result.volatility,
+            "max_drawdown": extra_metrics.max_drawdown,
+            "sharpe_ratio": extra_metrics.sharpe_ratio,
+            "sortino_ratio": extra_metrics.sortino_ratio,
+            "beta_to_benchmark": extra_metrics.beta_to_benchmark,
             "mean_return": result.mean_return,
             "std_return": result.std_return,
             "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -318,18 +347,32 @@ def _train_montecarlo_pipeline(
         mlflow.log_artifact(tmp_report, artifact_path="reports")
         os.unlink(tmp_report)
 
-        # Pickle and log the MC params (lightweight "model" artifact)
-        mc_artifact = {
+        # Build and log a proper mlflow.pyfunc model so the Inference Service
+        # can load it with mlflow.pyfunc.load_model() and call predict().
+        mc_pyfunc_model = MonteCarloModel.from_returns(
+            port_rets, seed=mc_params.seed
+        )
+        # Also save a human-readable params JSON alongside the pyfunc model
+        params_json = {
+            "mu": mc_pyfunc_model.mu,
+            "sigma": mc_pyfunc_model.sigma,
+            "seed": mc_pyfunc_model.seed,
             "params": result.to_mlflow_params(),
             "metrics": result.to_mlflow_metrics(),
         }
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as f:
-            json.dump(mc_artifact, f, indent=2)
-            tmp_mc = f.name
-        mlflow.log_artifact(tmp_mc, artifact_path="model")
-        os.unlink(tmp_mc)
+            json.dump(params_json, f, indent=2)
+            tmp_params = f.name
+
+        mlflow.pyfunc.log_model(
+            artifact_path="model",
+            python_model=mc_pyfunc_model,
+            # Embed the params JSON as an extra artifact inside the model directory
+            artifacts={"params_json": tmp_params},
+        )
+        os.unlink(tmp_params)
 
         model_version_str = _register_mlflow_model(run_id, model_name)
 
@@ -337,12 +380,13 @@ def _train_montecarlo_pipeline(
         model_name=model_name,
         model_version=model_version_str,
         mlflow_run_id=run_id,
-        metrics=result.to_mlflow_metrics(),
+        metrics=all_metrics,
     )
 
     logger.info(
-        "Monte Carlo training complete: run_id=%s  VaR=%.6f  CVaR=%.6f",
+        "Monte Carlo training complete: run_id=%s  VaR=%.6f  CVaR=%.6f  MDD=%.4f  Sharpe=%.3f",
         run_id, result.var, result.cvar,
+        extra_metrics.max_drawdown, extra_metrics.sharpe_ratio,
     )
 
     return TrainResult(

@@ -160,6 +160,10 @@ export interface PredictResponse {
   var: number;
   cvar: number;
   volatility: number;
+  max_drawdown: number | null;
+  sharpe_ratio: number | null;
+  sortino_ratio: number | null;
+  beta_to_benchmark: number | null;
   model_version: string;
   computed_at: string;
 }

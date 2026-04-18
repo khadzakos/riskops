@@ -3,12 +3,12 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Icons, BrandLogo } from './Icons';
+import { Icons } from './Icons';
 
 const NAV = [
   { section: 'Обзор' },
   { id: 'dashboard',  href: '/',           label: 'Дашборд',           icon: 'dashboard'  as const },
-  { id: 'portfolio',  href: '/portfolio',  label: 'Портфель',          icon: 'portfolio'  as const, badge: 'АЛЬФА-1' },
+  { id: 'portfolio',  href: '/portfolio',  label: 'Портфель',          icon: 'portfolio'  as const },
   { id: 'alerts',     href: '/alerts',     label: 'Алерты',            icon: 'alerts'     as const, badge: '!', badgeCrit: true },
   { section: 'Риск-модели' },
   { id: 'stress',     href: '/stress',     label: 'Стресс-тесты',      icon: 'stress'     as const },
@@ -25,10 +25,9 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark"><BrandLogo /></div>
         <div>
           <div className="brand-name">RiskOps</div>
-          <div className="brand-sub">Core MVP · v0.4</div>
+          <div className="brand-sub">Core MVP · v1.0</div>
         </div>
       </div>
 
@@ -57,15 +56,6 @@ export function Sidebar() {
           </Link>
         );
       })}
-
-      <div className="sidebar-footer">
-        <div className="avatar">МК</div>
-        <div className="stack" style={{ gap: 1 }}>
-          <div style={{ fontSize: 12, fontWeight: 500 }}>М. Корнеев</div>
-          <div style={{ fontSize: 10, color: 'var(--ink-3)' }}>Portfolio Manager</div>
-        </div>
-        <Icons.settings size={14} />
-      </div>
     </aside>
   );
 }
@@ -81,11 +71,6 @@ export function Topbar({ crumbs }: { crumbs: string[] }) {
             <span className={i === crumbs.length - 1 ? 'cur' : ''}>{c}</span>
           </React.Fragment>
         ))}
-      </div>
-      <div className="search">
-        <Icons.search size={13} />
-        <span>Поиск портфелей, моделей, алертов…</span>
-        <kbd>⌘K</kbd>
       </div>
       <button className="topbar-btn">
         <Icons.refresh size={14} />

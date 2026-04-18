@@ -2,6 +2,11 @@
 
 Uses the `arch` library to fit a GARCH(1,1) model on portfolio returns,
 then derives parametric VaR and CVaR from the conditional volatility forecast.
+
+Distribution support:
+  - normal  : standard Normal innovations (fast, underestimates fat tails)
+  - t       : Student-t innovations (captures fat tails; uses fitted df)
+  - skewt   : Skewed Student-t innovations (asymmetric fat tails)
 """
 from __future__ import annotations
 
@@ -29,6 +34,117 @@ class GARCHParams:
     q: int = 1          # GARCH lag order
     dist: str = "normal"  # innovation distribution: normal | t | skewt
     mean: str = "Zero"  # mean model: Zero | Constant | AR
+
+
+def _var_cvar_from_dist(
+    dist: str,
+    fit_result: ARCHModelResult,
+    cond_vol: float,
+    alpha: float,
+) -> tuple[float, float]:
+    """Compute parametric VaR and CVaR using the correct innovation distribution.
+
+    Args:
+        dist:       Innovation distribution name: 'normal', 't', or 'skewt'.
+        fit_result: Fitted ARCHModelResult (contains estimated parameters).
+        cond_vol:   1-step-ahead conditional volatility in decimal (not %).
+        alpha:      VaR confidence level (e.g. 0.99).
+
+    Returns:
+        (var, cvar) — both positive loss numbers.
+
+    Notes:
+        - Normal: uses standard Normal quantile.
+        - Student-t: uses fitted degrees-of-freedom from the arch result.
+          Degrees of freedom are stored in fit_result.params under the key 'nu'.
+        - Skewed Student-t: uses fitted nu and lambda (skewness) parameters.
+          Falls back to Student-t if lambda is not available.
+        - CVaR = E[loss | loss > VaR] computed analytically for Normal/t,
+          and numerically (from the fitted distribution) for skewt.
+    """
+    q_level = 1.0 - alpha  # left-tail quantile level
+
+    if dist == "normal":
+        z = stats.norm.ppf(q_level)          # negative number
+        var = float(-z * cond_vol)
+        pdf_z = stats.norm.pdf(z)
+        cvar = float(pdf_z / (1.0 - alpha) * cond_vol)
+
+    elif dist == "t":
+        # Extract fitted degrees of freedom; fall back to Normal if not found
+        nu = float(fit_result.params.get("nu", 0.0))
+        if nu < 2.1:
+            # nu too small or not fitted — fall back to Normal
+            logger.warning(
+                "GARCH dist='t' but nu=%.2f (invalid) — falling back to Normal for VaR/CVaR",
+                nu,
+            )
+            z = stats.norm.ppf(q_level)
+            var = float(-z * cond_vol)
+            cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
+        else:
+            # Student-t quantile (standardised, zero-mean, unit-variance)
+            # scipy.stats.t.ppf gives quantile of t(nu); we need standardised t
+            # Standardised t has variance nu/(nu-2), so scale by sqrt((nu-2)/nu)
+            scale = np.sqrt((nu - 2.0) / nu)
+            z = float(stats.t.ppf(q_level, df=nu) * scale)   # negative
+            var = float(-z * cond_vol)
+
+            # CVaR for standardised Student-t:
+            # E[X | X < z] = -f_t(z; nu) / F_t(z; nu) * (nu + z²) / (nu - 1) * scale
+            pdf_z = stats.t.pdf(z / scale, df=nu) / scale
+            cdf_z = float(q_level)  # = F_t(z/scale; nu) by construction
+            cvar = float(pdf_z / cdf_z * (nu + (z / scale) ** 2) / (nu - 1) * scale * cond_vol)
+
+    elif dist == "skewt":
+        # Skewed Student-t: use numerical CVaR from the fitted distribution
+        # arch stores skewness parameter as 'lambda' (η in some notations)
+        nu = float(fit_result.params.get("nu", 0.0))
+        lam = float(fit_result.params.get("lambda", 0.0))
+
+        if nu < 2.1:
+            logger.warning(
+                "GARCH dist='skewt' but nu=%.2f (invalid) — falling back to Normal",
+                nu,
+            )
+            z = stats.norm.ppf(q_level)
+            var = float(-z * cond_vol)
+            cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
+        else:
+            # Use arch's own distribution object for correct quantile/pdf
+            try:
+                from arch.univariate.distribution import SkewStudent
+                skewt_dist = SkewStudent()
+                # ppf returns standardised quantile
+                z = float(skewt_dist.ppf(q_level, parameters=np.array([nu, lam])))
+                var = float(-z * cond_vol)
+
+                # Numerical CVaR: integrate over the left tail
+                # Use 10 000 quantile points for accuracy
+                tail_probs = np.linspace(1e-6, q_level, 10_000)
+                tail_quantiles = skewt_dist.ppf(tail_probs, parameters=np.array([nu, lam]))
+                cvar = float(-np.mean(tail_quantiles) * cond_vol)
+            except Exception as exc:
+                logger.warning(
+                    "SkewStudent CVaR computation failed (%s) — falling back to Student-t",
+                    exc,
+                )
+                # Fall back to Student-t
+                scale = np.sqrt((nu - 2.0) / nu)
+                z = float(stats.t.ppf(q_level, df=nu) * scale)
+                var = float(-z * cond_vol)
+                pdf_z = stats.t.pdf(z / scale, df=nu) / scale
+                cvar = float(
+                    pdf_z / q_level * (nu + (z / scale) ** 2) / (nu - 1) * scale * cond_vol
+                )
+    else:
+        # Unknown distribution — fall back to Normal with a warning
+        logger.warning("Unknown GARCH dist=%r — using Normal for VaR/CVaR", dist)
+        z = stats.norm.ppf(q_level)
+        var = float(-z * cond_vol)
+        cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
+
+    return var, cvar
 
 
 @dataclass
@@ -110,14 +226,14 @@ def train_garch(
     # Annualised volatility (√252 scaling)
     vol_annualised = cond_vol * np.sqrt(252)
 
-    # Parametric VaR / CVaR using Normal distribution
-    # (even when dist='t', we use Normal for simplicity in MVP; can extend later)
-    z_alpha = stats.norm.ppf(1.0 - alpha)  # negative quantile for left tail
-    var = float(-z_alpha * cond_vol)       # positive loss number
-
-    # CVaR = E[loss | loss > VaR] = φ(z_α) / (1-α) * σ
-    pdf_z = stats.norm.pdf(z_alpha)
-    cvar = float(pdf_z / (1.0 - alpha) * cond_vol)
+    # Parametric VaR / CVaR — use the correct innovation distribution
+    # (Normal, Student-t with fitted df, or Skewed Student-t)
+    var, cvar = _var_cvar_from_dist(
+        dist=garch_params.dist,
+        fit_result=res,
+        cond_vol=cond_vol,
+        alpha=alpha,
+    )
 
     # Backtest: fraction of historical returns worse than -VaR
     exceedances = np.sum(returns < -var)

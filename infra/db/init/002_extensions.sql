@@ -53,3 +53,23 @@ CREATE TABLE IF NOT EXISTS ingestion_log (
     error_message TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Training job state (replaces in-memory dict in training-service)
+-- Survives container restarts; polled by GET /api/risk/train/status/{job_id}
+CREATE TABLE IF NOT EXISTS training_jobs (
+    job_id      TEXT PRIMARY KEY,
+    status      TEXT NOT NULL DEFAULT 'queued',   -- queued | running | completed | failed
+    model_type  TEXT,
+    symbols     TEXT[],
+    alpha       NUMERIC(8, 6),
+    horizon_days INT,
+    lookback_days INT,
+    n_simulations INT,
+    results     JSONB,          -- list of TrainResult dicts once completed
+    error       TEXT,           -- error message if failed
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_training_jobs_status ON training_jobs (status);
+CREATE INDEX IF NOT EXISTS idx_training_jobs_created ON training_jobs (created_at DESC);

@@ -57,6 +57,10 @@ class PredictResponse(BaseModel):
     var: float
     cvar: float
     volatility: float
+    max_drawdown: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    sortino_ratio: Optional[float] = None
+    beta_to_benchmark: Optional[float] = None
     model_version: str
     computed_at: str
 
@@ -72,13 +76,18 @@ class ModelHealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _store_risk_results(result: PredictionResult) -> None:
-    """Persist VaR, CVaR, and volatility into the risk_results table."""
+    """Persist VaR, CVaR, volatility and additional risk metrics into the risk_results table."""
     engine = get_engine()
-    rows = [
-        ("var",        result.var),
-        ("cvar",       result.cvar),
-        ("volatility", result.volatility),
+    candidate_rows = [
+        ("var",          result.var),
+        ("cvar",         result.cvar),
+        ("volatility",   result.volatility),
+        ("max_drawdown", result.max_drawdown),
+        ("sharpe_ratio", result.sharpe_ratio),
+        ("sortino_ratio",result.sortino_ratio),
     ]
+    # Filter out metrics that were not computed (None values)
+    rows = [(metric, value) for metric, value in candidate_rows if value is not None]
     with engine.begin() as conn:
         for metric, value in rows:
             conn.execute(
@@ -102,8 +111,9 @@ def _store_risk_results(result: PredictionResult) -> None:
                 },
             )
     logger.info(
-        "Stored risk results: portfolio=%d  method=%s  VaR=%.6f  CVaR=%.6f",
+        "Stored risk results: portfolio=%d  method=%s  VaR=%.6f  CVaR=%.6f  metrics=%s",
         result.portfolio_id, result.method, result.var, result.cvar,
+        [m for m, _ in rows],
     )
 
 
@@ -154,6 +164,10 @@ async def predict_risk(req: PredictRequest) -> PredictResponse:
         var=result.var,
         cvar=result.cvar,
         volatility=result.volatility,
+        max_drawdown=result.max_drawdown,
+        sharpe_ratio=result.sharpe_ratio,
+        sortino_ratio=result.sortino_ratio,
+        beta_to_benchmark=result.beta_to_benchmark,
         model_version=result.model_version,
         computed_at=result.computed_at.isoformat(),
     )
