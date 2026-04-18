@@ -43,3 +43,8 @@ __pycache__/
 *.pyz
 *.pywz
 *.pyzw
+
+# Frontend
+.next/
+node_modules/
+riskops-ui-templates/

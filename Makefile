@@ -57,6 +57,23 @@ restart-market-data:
 restart-training:
 	$(COMPOSE) restart training-service
 
+restart-inference:
+	$(COMPOSE) restart inference-service
+
+# ── End-to-end integration test ────────────────────────────────
+
+# Run full e2e test (requires all services up: make up)
+e2e:
+	./scripts/e2e_test.sh
+
+# Run e2e skipping slow steps (health + gateway routing only)
+e2e-fast:
+	./scripts/e2e_test.sh --skip-ingest --skip-train --skip-infer
+
+# Run e2e skipping training (use existing models)
+e2e-no-train:
+	./scripts/e2e_test.sh --skip-train
+
 # ── Code generation ────────────────────────────────────────────
 
 OAPI_CODEGEN := $(shell go env GOPATH)/bin/oapi-codegen

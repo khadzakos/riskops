@@ -115,7 +115,8 @@ services:
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       AIRFLOW__WEBSERVER__WORKERS: "1"
       AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "300"
-      AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: "30"
+      AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: "0"
+      AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "300"
       GUNICORN_CMD_ARGS: "--timeout 300 --workers 1"
       DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
       MLFLOW_TRACKING_URI: http://mlflow:3000
@@ -123,7 +124,10 @@ services:
       AWS_SECRET_ACCESS_KEY: riskops123
       AWS_ENDPOINT_URL: http://minio:9000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      PORTFOLIO_SERVICE_URL: http://portfolio-service:8082
       MARKET_DATA_SERVICE_URL: http://market-data-service:8083
+      TRAINING_SERVICE_URL: http://training-service:8084
+      INFERENCE_SERVICE_URL: http://inference-service:8085
       _AIRFLOW_WWW_USER_USERNAME: admin
       _AIRFLOW_WWW_USER_PASSWORD: admin
     volumes:
@@ -266,6 +270,58 @@ services:
         condition: service_started
       minio-init:
         condition: service_completed_successfully
+
+  inference-service:
+    profiles: [all, apps]
+    build:
+      context: ./apps/inference-service
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      PORT: "8085"
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
+      MLFLOW_TRACKING_URI: http://mlflow:3000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: riskops
+      AWS_SECRET_ACCESS_KEY: riskops123
+      S3_BUCKET_MODELS: riskops-models
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: inference-service
+      KAFKA_TOPIC_PORTFOLIO_UPDATED: portfolio.updated
+      KAFKA_TOPIC_MODEL_TRAINED: model.trained
+      DEFAULT_ALPHA: "0.99"
+      DEFAULT_HORIZON_DAYS: "1"
+      DEFAULT_LOOKBACK_DAYS: "252"
+      MONTE_CARLO_SIMULATIONS: "10000"
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
+  # ── Frontend ──────────────────────────────────────────────────
+  frontend:
+    profiles: [all, apps]
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://gateway:8081
+    depends_on:
+      - gateway
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   pipelines:
     profiles: [all, apps]

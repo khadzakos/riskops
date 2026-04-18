@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings
@@ -8,7 +7,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Server
-    port: int = 8084
+    port: int = 8085
     log_level: str = "info"
 
     # Postgres
@@ -25,14 +24,14 @@ class Settings(BaseSettings):
 
     # Kafka
     kafka_brokers: str = "kafka:9092"
-    kafka_consumer_group: str = "training-service"
-    kafka_topic_market_data: str = "market.data.ingested"
+    kafka_consumer_group: str = "inference-service"
+    kafka_topic_portfolio_updated: str = "portfolio.updated"
     kafka_topic_model_trained: str = "model.trained"
 
-    # Training defaults
-    default_lookback_days: int = 252
+    # Inference defaults
     default_alpha: float = 0.99
     default_horizon_days: int = 1
+    default_lookback_days: int = 252
     monte_carlo_simulations: int = 10_000
 
     model_config = {"env_file": ".env", "case_sensitive": False}
