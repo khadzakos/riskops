@@ -122,6 +122,10 @@ func (c *MOEXCollector) fetchSymbol(ctx context.Context, symbol string, from, to
 			if !ok || dateStr == "" {
 				continue
 			}
+			priceDate, err := time.Parse("2006-01-02", dateStr)
+			if err != nil {
+				continue
+			}
 			closeVal, ok := row[closeIdx].(float64)
 			if !ok {
 				continue
@@ -129,7 +133,7 @@ func (c *MOEXCollector) fetchSymbol(ctx context.Context, symbol string, from, to
 
 			allPrices = append(allPrices, models.RawPrice{
 				Symbol:     symbol,
-				PriceDate:  dateStr,
+				PriceDate:  priceDate,
 				Close:      closeVal,
 				Currency:   "RUB",
 				Source:     "moex",

@@ -120,7 +120,7 @@ def _register_model_in_db(
             text(
                 """
                 INSERT INTO model_registry (model_name, model_version, mlflow_run_id, status, metrics)
-                VALUES (:model_name, :model_version, :run_id, 'staging', :metrics::jsonb)
+                VALUES (:model_name, :model_version, :run_id, 'staging', cast(:metrics as jsonb))
                 ON CONFLICT (model_name, model_version) DO UPDATE SET
                     mlflow_run_id = EXCLUDED.mlflow_run_id,
                     metrics = EXCLUDED.metrics,

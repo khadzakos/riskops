@@ -68,7 +68,7 @@ func (c *SyntheticCollector) Collect(_ context.Context, req CollectRequest) (*Co
 
 			prices = append(prices, models.RawPrice{
 				Symbol:     symbol,
-				PriceDate:  current.Format("2006-01-02"),
+				PriceDate:  current,
 				Close:      math.Round(price*100) / 100,
 				Currency:   "USD",
 				Source:     "synthetic",

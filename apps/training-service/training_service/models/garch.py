@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from arch import arch_model
-from arch.univariate import ARCHModelResult
+from arch.univariate.base import ARCHModelResult
 from scipy import stats
 
 logger = logging.getLogger(__name__)
@@ -161,14 +161,15 @@ def train_garch(
 def plot_garch_diagnostics(result: GARCHResult, symbol: str = "portfolio") -> bytes:
     """Generate a 2×2 diagnostic plot and return PNG bytes for MLflow artifact logging."""
     res = result.fit_result
-    std_resid = res.std_resid
+    # std_resid may be ndarray or Series depending on arch version — normalise to Series
+    std_resid = pd.Series(np.asarray(res.std_resid).ravel())
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
     fig.suptitle(f"GARCH(1,1) Diagnostics — {symbol}", fontsize=14)
 
     # 1. Standardised residuals
     ax = axes[0, 0]
-    ax.plot(std_resid, linewidth=0.6, color="steelblue")
+    ax.plot(std_resid.values, linewidth=0.6, color="steelblue")
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
     ax.set_title("Standardised Residuals")
     ax.set_xlabel("Observation")
@@ -176,7 +177,7 @@ def plot_garch_diagnostics(result: GARCHResult, symbol: str = "portfolio") -> by
 
     # 2. Conditional volatility
     ax = axes[0, 1]
-    cond_vol = res.conditional_volatility / 100.0  # back to decimal
+    cond_vol = np.asarray(res.conditional_volatility).ravel() / 100.0  # back to decimal
     ax.plot(cond_vol, linewidth=0.8, color="darkorange")
     ax.set_title("Conditional Volatility (daily)")
     ax.set_xlabel("Observation")
@@ -184,7 +185,8 @@ def plot_garch_diagnostics(result: GARCHResult, symbol: str = "portfolio") -> by
 
     # 3. QQ-plot of standardised residuals
     ax = axes[1, 0]
-    (osm, osr), (slope, intercept, _) = stats.probplot(std_resid.dropna(), dist="norm")
+    clean = std_resid.dropna().values
+    (osm, osr), (slope, intercept, _) = stats.probplot(clean, dist="norm")
     ax.scatter(osm, osr, s=4, color="steelblue", alpha=0.6)
     ax.plot(osm, slope * np.array(osm) + intercept, color="red", linewidth=1)
     ax.set_title("QQ-Plot (Normal)")
@@ -193,8 +195,9 @@ def plot_garch_diagnostics(result: GARCHResult, symbol: str = "portfolio") -> by
 
     # 4. Histogram of standardised residuals
     ax = axes[1, 1]
-    ax.hist(std_resid.dropna(), bins=50, density=True, color="steelblue", alpha=0.7, edgecolor="white")
-    x = np.linspace(std_resid.min(), std_resid.max(), 200)
+    clean = std_resid.dropna().values
+    ax.hist(clean, bins=50, density=True, color="steelblue", alpha=0.7, edgecolor="white")
+    x = np.linspace(clean.min(), clean.max(), 200)
     ax.plot(x, stats.norm.pdf(x), color="red", linewidth=1.5, label="N(0,1)")
     ax.set_title("Residual Distribution")
     ax.set_xlabel("Std. Residual")

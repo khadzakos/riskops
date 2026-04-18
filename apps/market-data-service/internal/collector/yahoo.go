@@ -113,9 +113,10 @@ func (c *YahooCollector) fetchSymbol(ctx context.Context, symbol string, from, t
 			continue
 		}
 		t := time.Unix(int64(ts), 0).UTC()
+		priceDate := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 		prices = append(prices, models.RawPrice{
 			Symbol:     symbol,
-			PriceDate:  t.Format("2006-01-02"),
+			PriceDate:  priceDate,
 			Close:      *closes[i],
 			Currency:   currency,
 			Source:     "yahoo",

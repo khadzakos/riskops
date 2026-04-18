@@ -1,19 +1,63 @@
-up:
-	docker-compose up -d --build
+COMPOSE := docker-compose
 
+up:
+	$(COMPOSE) --profile all up -d --build
+
+# Rebuild and recreate all containers
 force-up:
-	docker-compose up -d --build --force-recreate
+	$(COMPOSE) --profile all up -d --build --force-recreate
+
+# Start without rebuilding (use existing images)
+start:
+	$(COMPOSE) --profile infra --profile apps --profile mlflow --profile observability up -d
 
 down:
-	docker-compose down -v
+	$(COMPOSE) --profile infra --profile apps --profile mlflow --profile observability --profile airflow down -v
 
 logs:
-	docker-compose logs -f --tail=200
+	$(COMPOSE) logs -f --tail=200
 
 ps:
-	docker-compose ps
+	$(COMPOSE) ps -a
 
-# ── Code generation ────────────────────────────────────────
+
+# Infrastructure only: db + kafka + minio (no build)
+up-infra:
+	$(COMPOSE) --profile infra up -d
+
+# Apps only: all Go + Python services (requires infra + mlflow running)
+up-apps:
+	$(COMPOSE) --profile apps up -d --build
+
+start-apps:
+	$(COMPOSE) --profile apps up -d
+
+# MLflow + MinIO (no build)
+up-mlflow:
+	$(COMPOSE) --profile mlflow up -d
+
+# Airflow (builds custom image)
+up-airflow:
+	$(COMPOSE) --profile airflow up -d --build
+
+# Observability: Prometheus + Grafana (no build)
+up-observability:
+	$(COMPOSE) --profile observability up -d
+
+# ── Restart individual services without rebuild ────────────────
+restart-gateway:
+	$(COMPOSE) restart gateway
+
+restart-portfolio:
+	$(COMPOSE) restart portfolio-service
+
+restart-market-data:
+	$(COMPOSE) restart market-data-service
+
+restart-training:
+	$(COMPOSE) restart training-service
+
+# ── Code generation ────────────────────────────────────────────
 
 OAPI_CODEGEN := $(shell go env GOPATH)/bin/oapi-codegen
 # Shared config: api/oapi-codegen.yaml (generate:* only). Per service: -o, -package, spec path.
@@ -27,7 +71,7 @@ generate-market-data:
 
 generate: generate-portfolio generate-market-data
 
-# ── Go builds ──────────────────────────────────────────────
+# ── Go builds ──────────────────────────────────────────────────
 
 build-gateway:
 	go build -o bin/gateway ./apps/gateway
@@ -43,10 +87,10 @@ build-all: build-gateway build-portfolio build-market-data
 tidy:
 	go mod tidy
 
-# ── Pipeline CLI ───────────────────────────────────────────
+# ── Pipeline CLI ───────────────────────────────────────────────
 
 cli-test-pipelines:
-	docker-compose run --rm pipelines ingest --symbols "AAPL,MSFT" --start 2024-01-01 --end 2024-12-31 --source synthetic
-	docker-compose run --rm pipelines process --symbols "AAPL,MSFT"
-	docker-compose run --rm pipelines risk --portfolio demo --alpha 0.99 --method historical
-	docker-compose run --rm pipelines log-to-mlflow --portfolio demo --experiment riskops-mvp
+	docker compose run --rm pipelines ingest --symbols "AAPL,MSFT" --start 2024-01-01 --end 2024-12-31 --source synthetic
+	docker compose run --rm pipelines process --symbols "AAPL,MSFT"
+	docker compose run --rm pipelines risk --portfolio demo --alpha 0.99 --method historical
+	docker compose run --rm pipelines log-to-mlflow --portfolio demo --experiment riskops-mvp

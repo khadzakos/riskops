@@ -649,7 +649,7 @@ minio:             # S3-compatible storage
 
 ### Build Strategy
 - Go services: multi-stage build (build in golang:1.23, run in alpine)
-- Python services: python:3.11-slim with uv for fast installs
+- Python services: python:3.12-slim with uv for fast installs
 - Shared Go module: `go.mod` at repo root, services import `pkg/`
 
 ### Go Module Layout
@@ -809,18 +809,42 @@ riskops/
 └── scripts/                          # helper scripts
 ```
 
-## Recomendations:
-```
-Николай, добрый день!
+## Data Resources
 
-По метрикам риска, которые используются в индустрии: основные — это VaR (Value at Risk), CVaR (Expected Shortfall), волатильность портфеля, максимальная просадка (Max Drawdown), Beta к бенчмарку, а также risk-adjusted метрики типа Sharpe и Sortino.
+### e-disclosure.ru — Corporate Reporting API
+Добавить сбор финансовой отчётности компаний через [шлюз API e-disclosure.ru](https://e-disclosure.ru/poluchenie-informacii/shlyuz-api).
 
-По данным: понадобятся цены и доходности активов (дневные или более частые), данные по бенчмаркам (индексы), историческая и implied волатильность, корреляционные матрицы между активами, а также макро-факторы (процентные ставки, VIX и т.д.).
+**Что даёт:** РСБУ/МСФО отчётность, существенные факты, раскрытия эмитентов — фундаментальные данные для кредитного риска и оценки дефолта.
 
-По моделям: классика — это исторический VaR (квантиль прошлых доходностей), параметрический VaR (предполагает нормальное распределение), Monte Carlo симуляции. Для моделирования волатильности используют HAR-семейство. Желательно обратить внимание на зависимости между активами. 
+**Реализация:**
+- Новый коллектор `apps/market-data-service/internal/collector/edisclosure.go` — реализует интерфейс `Collector`
+- Новая таблица `corporate_reports` в Postgres (emitter_id, report_type, period, raw_xml, parsed_json)
+- Лёгкая LLM-обёртка (например, локальный `llama.cpp` или вызов OpenAI API) для извлечения структурированных данных из XML-отчётности: выручка, EBITDA, долг, коэффициенты ликвидности
+- Результат парсинга → фичи для кредитной модели PD/LGD
 
-На перспективу рекомендовал бы Вам изучить рыночно-нейтральные и риск-нейтральные стратегии — это даст понимание, как на практике работает индустрия.
-```
+**Приоритет:** Среднесрочно (после MVP)
+
+---
+
+## Features
+
+### Backtesting Engine (приоритет: высокий)
+Статистически корректный бэктест моделей VaR — не просто подсчёт нарушений, а формальные тесты.
+
+### Market Simulation / Stress Testing (приоритет: высокий)
+Симуляция рыночных условий для стресс-тестирования портфеля.
+
+---
+
+## Recommendations (from industry expert)
+
+> По метрикам риска: основные — VaR, CVaR (Expected Shortfall), волатильность портфеля, максимальная просадка (Max Drawdown), Beta к бенчмарку, risk-adjusted метрики Sharpe и Sortino.
+>
+> По данным: цены и доходности активов (дневные или более частые), данные по бенчмаркам (индексы), историческая и implied волатильность, корреляционные матрицы между активами, макро-факторы (процентные ставки, VIX и т.д.).
+>
+> По моделям: исторический VaR (квантиль прошлых доходностей), параметрический VaR (нормальное распределение), Monte Carlo симуляции. Для моделирования волатильности — HAR-семейство. Важны зависимости между активами.
+>
+> На перспективу: рыночно-нейтральные и риск-нейтральные стратегии.
 
 ## MLOps Architecture
 ```
@@ -871,3 +895,468 @@ riskops/
               │  Version bump   │
               └─────────────────┘
 ```
+
+---
+
+### How to Verify the Stack Works
+
+```bash
+# 1. Start everything
+docker compose up -d --build
+
+# 2. Health checks
+curl http://localhost:8081/health          # API Gateway
+curl http://localhost:8082/health          # Portfolio Service
+curl http://localhost:8083/health          # Market Data Service
+curl http://localhost:8084/health          # Training Service
+
+# 3. Open UIs
+open http://localhost:3000   # MLflow
+open http://localhost:3001   # Grafana (admin/admin)
+open http://localhost:8080   # Airflow (admin/admin)
+open http://localhost:9001   # MinIO Console
+
+# 4. End-to-end ML pipeline test
+# Step 1: generate synthetic data
+curl -X POST http://localhost:8083/api/market-data/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"source":"synthetic","symbols":["AAPL","MSFT","GOOGL"],"days":300}'
+
+# Step 2: trigger training
+curl -X POST http://localhost:8084/api/risk/train \
+  -H "Content-Type: application/json" \
+  -d '{"symbols":["AAPL","MSFT","GOOGL"],"model_type":"all","alpha":0.99}'
+
+# Step 3: poll job status (use job_id from response above)
+curl http://localhost:8084/api/risk/train/status/{job_id}
+
+# Step 4: list registered models
+curl http://localhost:8084/api/risk/models
+```
+
+---
+
+## 16. Architectural Issues & Technical Debt
+
+### Critical Issues (block MVP)
+
+#### 1. Inference Service is missing
+The gateway already routes `INFERENCE_SERVICE_URL: http://inference-service:8085` but no service exists.
+The entire ML pipeline has no output endpoint. **Must be built first.**
+
+#### 2. GARCH CVaR uses Normal distribution regardless of `dist` parameter
+**File:** `apps/training-service/training_service/models/garch.py:114`
+```python
+# BUG: always uses Normal even when dist='t'
+z_alpha = stats.norm.ppf(1.0 - alpha)
+```
+Financial returns have fat tails. Using Normal distribution **underestimates tail risk**.
+**Fix:** use `stats.t.ppf` with fitted degrees of freedom when `dist='t'` or `dist='skewt'`.
+
+#### 3. Backtest is in-sample (not a real backtest)
+**File:** `apps/training-service/training_service/models/garch.py:123`
+```python
+# This is NOT a backtest — it measures violations on the TRAINING set
+exceedances = np.sum(returns < -var)
+coverage_ratio = float(exceedances / len(returns))
+```
+A real backtest requires out-of-sample rolling window evaluation with formal statistical tests.
+
+### Significant Issues (degrade quality)
+
+#### 4. In-memory job registry lost on restart
+**File:** `apps/training-service/training_service/api/routes.py:30`
+```python
+_jobs: dict[str, dict[str, Any]] = {}  # lost on container restart
+```
+**Fix:** persist job state to Postgres `training_jobs` table.
+
+#### 5. Monte Carlo does not save a loadable model artifact
+**File:** `apps/training-service/training_service/pipelines/train.py:322`
+```python
+mc_artifact = {"params": ..., "metrics": ...}  # just JSON, not a model
+```
+The Inference Service cannot "load" Monte Carlo from MLflow as a model.
+**Fix:** wrap MC parameters in a `mlflow.pyfunc` model class with a `predict()` method.
+
+#### 6. Double model registration (MLflow + Postgres) without sync
+`model_registry` table in Postgres can diverge from MLflow Model Registry.
+**Fix:** treat MLflow as the single source of truth; query MLflow directly in the Inference Service.
+
+#### 7. Missing risk metrics recommended by industry
+Currently only VaR, CVaR, volatility are computed. Missing:
+- **Max Drawdown** — maximum peak-to-trough loss
+- **Sharpe Ratio** — return per unit of total risk
+- **Sortino Ratio** — return per unit of downside risk
+- **Beta** — portfolio sensitivity to benchmark (IMOEX, SPY)
+- **Correlation matrix** — between portfolio assets
+
+---
+
+## 17. Backtesting Engine Design
+
+### What a proper backtest looks like
+
+```
+Training window: [t-lookback, t-1]  →  Fit model  →  Predict VaR(t)
+                                                            ↓
+                                              Check: return(t) < -VaR(t)?
+                                                            ↓
+                                              Record violation: 1 or 0
+Slide window by 1 day → repeat for all t in [T_train+1, T_end]
+```
+
+### Statistical Tests
+
+**Kupiec Unconditional Coverage Test**
+Tests whether the observed violation rate equals the expected rate `1 - α`.
+```
+H0: p = 1 - α
+LR_uc = -2 * ln[(1-p)^(T-x) * p^x / (1-x/T)^(T-x) * (x/T)^x]
+LR_uc ~ χ²(1) under H0
+```
+
+**Christoffersen Conditional Coverage Test**
+Additionally tests that violations are independent (no clustering).
+```
+LR_cc = LR_uc + LR_ind
+LR_cc ~ χ²(2) under H0
+```
+
+**Decision thresholds:**
+- `p-value > 0.05` → OK (model is well-calibrated)
+- `0.01 < p-value ≤ 0.05` → WARN (notify, monitor closely)
+- `p-value ≤ 0.01` → CRIT (trigger retraining)
+
+### Implementation Plan
+
+New module: `apps/training-service/training_service/backtesting/`
+
+```
+backtesting/
+├── __init__.py
+├── rolling_backtest.py     # rolling window engine
+├── kupiec.py               # Kupiec LR test
+├── christoffersen.py       # Christoffersen CC test
+└── report.py               # backtest report + MLflow logging
+```
+
+**API endpoint** (add to Training Service):
+```
+POST /api/risk/backtest
+{
+  "symbols": ["AAPL", "MSFT"],
+  "model_type": "garch",          // garch | montecarlo | historical
+  "alpha": 0.99,
+  "lookback_days": 252,
+  "test_days": 60                 // out-of-sample window
+}
+
+Response:
+{
+  "violations": 3,
+  "total_days": 60,
+  "violation_rate": 0.05,
+  "expected_rate": 0.01,
+  "kupiec_pvalue": 0.023,
+  "christoffersen_pvalue": 0.041,
+  "status": "WARN"
+}
+```
+
+**MLflow logging:** backtest results logged as metrics on the model run:
+- `backtest_violations`, `backtest_violation_rate`
+- `kupiec_pvalue`, `christoffersen_pvalue`
+- `backtest_status` (OK / WARN / CRIT)
+
+---
+
+## 18. Market Simulation & Stress Testing Design
+
+### Scenario Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| **Historical Replay** | Replay actual crisis returns | 2008 GFC, 2020 COVID, 1998 LTCM |
+| **Parametric Stress** | Scale volatility, shift correlations | σ × 3, corr → 1 |
+| **Factor Shock** | Shock macro factors | +300bps rates, VIX × 2 |
+| **Reverse Stress** | Find scenario causing X% loss | "What breaks the portfolio?" |
+
+### Architecture
+
+```mermaid
+graph LR
+    subgraph "Scenario Definitions"
+        S1[Historical: 2008]
+        S2[Historical: 2020]
+        S3[Parametric: σ×3]
+        S4[Factor: Rate+300bps]
+        S5[Custom: user-defined]
+    end
+
+    subgraph "Simulation Engine"
+        GBM[Stressed GBM]
+        HIST[Historical Replay]
+        FACTOR[Factor Model]
+    end
+
+    subgraph "Risk Output"
+        PL[P&L Distribution]
+        VAR[Stressed VaR/CVaR]
+        MD[Max Drawdown]
+        REPORT[Scenario Report JSON]
+    end
+
+    S1 --> HIST
+    S2 --> HIST
+    S3 --> GBM
+    S4 --> FACTOR
+    S5 --> GBM
+
+    HIST --> PL
+    GBM --> PL
+    FACTOR --> PL
+
+    PL --> VAR
+    PL --> MD
+    PL --> REPORT
+```
+
+### API Endpoints (add to Inference Service)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/risk/scenarios` | List available scenarios |
+| POST | `/api/risk/scenarios/run` | Run stress test for portfolio |
+| GET | `/api/risk/scenarios/{id}/report` | Get scenario report |
+
+**Request:**
+```json
+POST /api/risk/scenarios/run
+{
+  "portfolio_id": 1,
+  "scenario": "historical_2008",   // or "parametric" with params below
+  "vol_multiplier": 3.0,           // for parametric
+  "corr_shock": 0.9,               // push correlations toward 1
+  "n_simulations": 50000
+}
+```
+
+**Response:**
+```json
+{
+  "portfolio_id": 1,
+  "scenario": "historical_2008",
+  "stressed_var": 0.087,
+  "stressed_cvar": 0.124,
+  "max_drawdown": 0.43,
+  "worst_day": -0.089,
+  "p10_return": -0.067,
+  "p1_return": -0.124,
+  "computed_at": "2025-01-15T10:30:00Z"
+}
+```
+
+### Built-in Historical Scenarios
+
+```python
+SCENARIOS = {
+    "historical_2008": {
+        "name": "Global Financial Crisis 2008",
+        "period": ("2008-09-01", "2009-03-31"),
+        "description": "Lehman collapse, credit freeze, equity -50%"
+    },
+    "historical_2020": {
+        "name": "COVID-19 Crash 2020",
+        "period": ("2020-02-19", "2020-03-23"),
+        "description": "Fastest 30% drawdown in history"
+    },
+    "historical_1998": {
+        "name": "LTCM / Russia Default 1998",
+        "period": ("1998-08-01", "1998-10-31"),
+        "description": "Russian default, LTCM collapse, liquidity crisis"
+    },
+    "parametric_mild": {
+        "vol_multiplier": 2.0, "corr_shock": 0.7,
+        "description": "Mild stress: 2x volatility"
+    },
+    "parametric_severe": {
+        "vol_multiplier": 4.0, "corr_shock": 0.95,
+        "description": "Severe stress: 4x volatility, correlations → 1"
+    },
+}
+```
+
+---
+
+## 19. MLOps Loop: Full Implementation Plan
+
+### Components
+
+| Component | Where | What it does |
+|-----------|-------|-------------|
+| **Backtesting Pipeline** | Training Service | Rolling window VaR backtest, Kupiec/Christoffersen |
+| **Parameter Monitor** | Training Service | Check GARCH stationarity: α+β < 0.999, ω > 0 |
+| **Alert Engine** | Airflow DAG | Aggregate signals → OK/WARN/CRIT decision |
+| **Retraining Job** | Training Service | Triggered by CRIT alert, fits new model |
+| **Shadow Mode** | Inference Service | New model runs in parallel, not in production |
+| **A/B Comparison** | Training Service | Compare old vs new model on backtest metrics |
+| **Model Promotion** | MLflow | Transition model from Staging → Production |
+| **Drift Monitor** | Grafana | Dashboard: VaR violations rate over time |
+
+### Daily MLOps DAG (Airflow)
+
+```
+schedule: daily at 18:00 UTC
+
+[ingest_market_data]
+        ↓
+[compute_returns]
+        ↓
+[run_backtest] ──────────────────────────────────────────┐
+        ↓                                                 │
+[monitor_garch_params]                                    │
+        ↓                                                 │
+[aggregate_alerts]                                        │
+        ↓                                                 ↓
+   OK → [log_metrics]              WARN → [send_notification]
+                                   CRIT → [trigger_retraining]
+                                               ↓
+                                      [shadow_mode_compare]
+                                               ↓
+                                      [promote_or_reject]
+```
+
+### GARCH Parameter Health Checks
+
+```python
+def check_garch_health(params: dict) -> str:
+    alpha = params["alpha[1]"]   # ARCH coefficient
+    beta  = params["beta[1]"]    # GARCH coefficient
+    omega = params["omega"]      # constant variance term
+
+    persistence = alpha + beta
+
+    if persistence >= 1.0:
+        return "CRIT"   # non-stationary, model is broken
+    if persistence >= 0.999:
+        return "WARN"   # near unit root, high persistence
+    if omega <= 0:
+        return "CRIT"   # invalid variance floor
+    return "OK"
+```
+
+---
+
+## 20. Additional Risk Metrics Implementation
+
+### Metrics to Add (per industry recommendations)
+
+#### Max Drawdown
+```python
+def max_drawdown(returns: np.ndarray) -> float:
+    """Maximum peak-to-trough loss in the return series."""
+    cumulative = np.cumprod(1 + returns)
+    running_max = np.maximum.accumulate(cumulative)
+    drawdown = (cumulative - running_max) / running_max
+    return float(drawdown.min())  # negative number
+```
+
+#### Sharpe Ratio
+```python
+def sharpe_ratio(returns: np.ndarray, risk_free_rate: float = 0.0) -> float:
+    """Annualised Sharpe ratio."""
+    excess = returns - risk_free_rate / 252
+    return float(np.mean(excess) / np.std(excess, ddof=1) * np.sqrt(252))
+```
+
+#### Sortino Ratio
+```python
+def sortino_ratio(returns: np.ndarray, risk_free_rate: float = 0.0) -> float:
+    """Annualised Sortino ratio (downside deviation only)."""
+    excess = returns - risk_free_rate / 252
+    downside = excess[excess < 0]
+    downside_std = np.sqrt(np.mean(downside ** 2))
+    return float(np.mean(excess) / downside_std * np.sqrt(252))
+```
+
+#### Beta to Benchmark
+```python
+def beta(portfolio_returns: np.ndarray, benchmark_returns: np.ndarray) -> float:
+    """Portfolio beta relative to benchmark."""
+    cov = np.cov(portfolio_returns, benchmark_returns)[0, 1]
+    var_bench = np.var(benchmark_returns, ddof=1)
+    return float(cov / var_bench)
+```
+
+### Where to add
+- New module: `apps/training-service/training_service/metrics/risk_metrics.py`
+- Log all metrics to MLflow in `_train_garch_pipeline()` and `_train_montecarlo_pipeline()`
+- Expose via Inference Service response (extend `POST /api/risk/predict` response schema)
+
+---
+
+## 21. Roadmap to Worthy MVP
+
+### Immediate (1–2 weeks) — Critical Path
+
+1. **Build Inference Service** (`apps/inference-service/`)
+   - Load GARCH model from MLflow Model Registry
+   - `POST /api/risk/predict` → VaR, CVaR, volatility
+   - Kafka consumer: `model.trained` → hot-reload model
+   - Kafka consumer: `portfolio.updated` → auto-recalculate risk
+   - Fallback to Historical Simulation if no model available
+   - Store results in `risk_results` table
+
+2. **Fix GARCH CVaR distribution** (`models/garch.py`)
+   - Use `stats.t.ppf` when `dist='t'`
+   - Add `dist='skewt'` support for skewed Student-t
+
+3. **Persist training job state** (`api/routes.py`)
+   - Replace `_jobs: dict` with Postgres `training_jobs` table
+
+### Short-term (2–4 weeks) — Quality
+
+4. **Backtesting Engine** (`training_service/backtesting/`)
+   - Rolling window out-of-sample backtest
+   - Kupiec test + Christoffersen test
+   - Results logged to MLflow, exposed via API
+
+5. **Market Simulation** (`inference_service/scenarios/`)
+   - Parametric stress (vol multiplier, corr shock)
+   - 3 historical scenarios: 2008, 2020, 1998
+   - `POST /api/risk/scenarios/run`
+
+6. **Airflow DAGs** (`infra/airflow/dags/`)
+   - `daily_risk_dag.py` — daily pipeline
+   - `training_dag.py` — on-demand + scheduled retraining
+
+7. **Additional risk metrics** (`training_service/metrics/`)
+   - Max Drawdown, Sharpe, Sortino, Beta
+
+### Medium-term (1–2 months) — Production Quality
+
+8. **HAR-RV Model** — Heterogeneous Autoregressive Realized Volatility
+   - Better than GARCH for volatility forecasting
+   - Uses realized variance at daily/weekly/monthly horizons
+
+9. **MLOps Loop** — automated retraining on model degradation
+   - Daily backtest → alert → retrain → shadow mode → promote
+
+10. **e-disclosure.ru collector** + LLM parsing
+    - Corporate reporting data for credit risk features
+
+11. **Alerting Service** — Telegram bot for WARN/CRIT alerts
+
+12. **Shadow Mode** in Inference Service — A/B model comparison
+
+### Definition of "Worthy MVP"
+
+- [ ] Full end-to-end pipeline: market data → training → inference → results in UI
+- [ ] Statistically correct backtest (Kupiec + Christoffersen, not just coverage ratio)
+- [ ] At least 3 stress test scenarios (parametric + 2 historical)
+- [ ] All 7 risk metrics: VaR, CVaR, volatility, Max Drawdown, Sharpe, Sortino, Beta
+- [ ] Model drift monitoring in Grafana (VaR violations rate over time)
+- [ ] Automated retraining trigger on CRIT alert
+- [ ] Model versioning with rollback capability in MLflow
+- [ ] Training job state persisted (survives container restart)

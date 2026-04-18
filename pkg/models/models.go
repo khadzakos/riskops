@@ -33,7 +33,7 @@ type RiskResult struct {
 
 type RawPrice struct {
 	Symbol     string    `json:"symbol"`
-	PriceDate  string    `json:"price_date"`
+	PriceDate  time.Time `json:"price_date"`
 	Close      float64   `json:"close"`
 	Currency   string    `json:"currency,omitempty"`
 	Source     string    `json:"source,omitempty"`
@@ -42,7 +42,7 @@ type RawPrice struct {
 
 type ProcessedReturn struct {
 	Symbol     string    `json:"symbol"`
-	PriceDate  string    `json:"price_date"`
+	PriceDate  time.Time `json:"price_date"`
 	Ret        float64   `json:"ret"`
 	ComputedAt time.Time `json:"computed_at"`
 }

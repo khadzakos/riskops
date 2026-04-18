@@ -236,7 +236,7 @@ func (h *MarketDataHandler) GetIngestionLog(ctx context.Context, req api.GetInge
 func toAPIRawPrice(p models.RawPrice) api.RawPrice {
 	r := api.RawPrice{
 		Symbol:     p.Symbol,
-		PriceDate:  stringToDate(p.PriceDate),
+		PriceDate:  timeToAPIDate(p.PriceDate),
 		Close:      p.Close,
 		IngestedAt: p.IngestedAt,
 	}
@@ -252,7 +252,7 @@ func toAPIRawPrice(p models.RawPrice) api.RawPrice {
 func toAPIProcessedReturn(ret models.ProcessedReturn) api.ProcessedReturn {
 	return api.ProcessedReturn{
 		Symbol:     ret.Symbol,
-		PriceDate:  stringToDate(ret.PriceDate),
+		PriceDate:  timeToAPIDate(ret.PriceDate),
 		Ret:        ret.Ret,
 		ComputedAt: ret.ComputedAt,
 	}
