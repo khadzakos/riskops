@@ -940,7 +940,7 @@ curl http://localhost:8084/api/risk/models
 
 ### Critical Issues (block MVP)
 
-#### 3. Backtest is in-sample (not a real backtest)
+#### 1. Backtest is in-sample (not a real backtest)
 **File:** `apps/training-service/training_service/models/garch.py:123`
 ```python
 # This is NOT a backtest — it measures violations on the TRAINING set
@@ -948,6 +948,13 @@ exceedances = np.sum(returns < -var)
 coverage_ratio = float(exceedances / len(returns))
 ```
 A real backtest requires out-of-sample rolling window evaluation with formal statistical tests.
+
+#### 2. Надежность и отказоустойчивость
+Падает Airflow, Kafka и остальные сервисы
+
+#### 3. Точность работы моделей и пайплайнов (ПРОВЕРИТЬ)
+
+#### 4. Отсутие макропоказателей!!!
 
 ### Significant Issues (degrade quality)
 
