@@ -718,6 +718,9 @@ STUDY HOW THIS MODELS WORKS
 33. Go services expose `/metrics` (Prometheus client: Go/process/build info)
 34. Grafana: provisioned Prometheus datasource + RiskOps overview dashboard
 
+### Phase 8: Alerting Service
+35. Send alerts to telegram-bot or email
+
 ---
 
 ## 14. File Tree Summary (what will be created)
@@ -806,14 +809,65 @@ riskops/
 └── scripts/                          # helper scripts
 ```
 
----
+## Recomendations:
+```
+Николай, добрый день!
 
-## 15. K8S Consideration
+По метрикам риска, которые используются в индустрии: основные — это VaR (Value at Risk), CVaR (Expected Shortfall), волатильность портфеля, максимальная просадка (Max Drawdown), Beta к бенчмарку, а также risk-adjusted метрики типа Sharpe и Sortino.
 
-For MVP, K8S is **not needed** — docker-compose is sufficient. K8S becomes valuable when:
-- You need horizontal scaling (multiple inference replicas)
-- You want auto-scaling based on load
-- You need rolling deployments with zero downtime
-- You move to a multi-environment setup (staging/prod)
+По данным: понадобятся цены и доходности активов (дневные или более частые), данные по бенчмаркам (индексы), историческая и implied волатильность, корреляционные матрицы между активами, а также макро-факторы (процентные ставки, VIX и т.д.).
 
-**Recommendation**: Add K8S manifests (Helm charts) in a later phase after the core is stable. The microservice architecture we're building is already K8S-ready.
+По моделям: классика — это исторический VaR (квантиль прошлых доходностей), параметрический VaR (предполагает нормальное распределение), Monte Carlo симуляции. Для моделирования волатильности используют HAR-семейство. Желательно обратить внимание на зависимости между активами. 
+
+На перспективу рекомендовал бы Вам изучить рыночно-нейтральные и риск-нейтральные стратегии — это даст понимание, как на практике работает индустрия.
+```
+
+## MLOps Architecture
+```
+┌─────────────────────────────────────────────────────────┐
+│                    SCHEDULER (Airflow/Cron)              │
+│                     Ежедневно в 18:00                   │
+└────────────────────────┬────────────────────────────────┘
+                         │
+            ┌────────────┴────────────┐
+            ▼                         ▼
+   ┌──────────────────┐    ┌──────────────────────┐
+   │  BACKTESTING     │    │  PARAMETER MONITOR   │
+   │  PIPELINE        │    │                      │
+   │                  │    │  α + β < 0.999?      │
+   │  violations_rate │    │  ω > 0?              │
+   │  Kupiec test     │    │  log_likelihood OK?  │
+   │  Christoffersen  │    │                      │
+   └────────┬─────────┘    └──────────┬───────────┘
+            │                          │
+            └──────────┬───────────────┘
+                       ▼
+              ┌─────────────────┐
+              │   ALERT ENGINE  │
+              │                 │
+              │  OK → continue  │
+              │  WARN → notify  │
+              │  CRIT → retrain │
+              └────────┬────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ RETRAINING JOB  │
+              │                 │
+              │ Rolling window  │
+              │ Fit new model   │
+              │ Shadow mode     │
+              │ A/B compare     │
+              │ Promote/Reject  │
+              └────────┬────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │    MLFLOW       │
+              │                 │
+              │  Log params     │
+              │  Log metrics    │
+              │  Register model │
+              │  Version bump   │
+              └─────────────────┘
+```
