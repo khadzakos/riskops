@@ -47,7 +47,7 @@ jobs:
           echo "services=${SERVICES}" >> "${GITHUB_OUTPUT}"
           echo "Compose redeploy targets: [${SERVICES:-<none — git sync only>}]"
 
-      # Всегда подтягиваем main на ВМ; docker compose --build только если маппинг вернул сервисы.
+      # Всегда подтягиваем main на ВМ; docker-compose --build только если маппинг вернул сервисы.
       - name: Sync repo on VM (redeploy services only if mapped)
         uses: appleboy/ssh-action@v1.2.0
         env:
@@ -67,11 +67,11 @@ jobs:
             git checkout main
             git pull --ff-only origin main
             if [[ -z "${SERVICES}" ]]; then
-              echo "No mapped compose services; git sync done, skipping docker compose --build."
+              echo "No mapped compose services; git sync done, skipping docker-compose --build."
               exit 0
             fi
             if [[ "${SERVICES}" == "ALL_APPS" ]]; then
-              docker compose --profile apps --profile airflow --profile observability up -d --build
+              docker-compose --profile apps --profile airflow --profile observability up -d --build
               exit 0
             fi
             PROFILES=(--profile apps)
@@ -81,4 +81,4 @@ jobs:
             case "${SERVICES}" in
               *airflow*) PROFILES+=(--profile airflow) ;;
             esac
-            docker compose "${PROFILES[@]}" up -d --build ${SERVICES}
+            docker-compose "${PROFILES[@]}" up -d --build ${SERVICES}

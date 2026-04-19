@@ -88,6 +88,10 @@ generate-market-data:
 
 generate: generate-portfolio generate-market-data
 
+# Same outputs as `make generate`, via Docker (no local oapi-codegen install)
+generate-compose:
+	$(COMPOSE) --profile tools run --rm oapi-gen
+
 # ── Go builds ──────────────────────────────────────────────────
 
 build-gateway:

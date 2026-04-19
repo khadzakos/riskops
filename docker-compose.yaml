@@ -317,7 +317,7 @@ services:
     depends_on:
       - gateway
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -334,6 +334,27 @@ services:
     depends_on:
       frontend:
         condition: service_healthy
+
+  # One-shot OpenAPI → Go (api.gen.go). Usage: docker compose --profile tools run --rm oapi-gen
+  oapi-gen:
+    profiles: [tools]
+    image: golang:1.24-bookworm
+    working_dir: /work
+    volumes:
+      - .:/work
+    environment:
+      GOTOOLCHAIN: auto
+    entrypoint: ["/bin/sh", "-eux", "-c"]
+    command:
+      - |
+        go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 \
+          --config api/oapi-codegen.yaml -package api \
+          -o apps/portfolio-service/internal/api/api.gen.go \
+          apps/portfolio-service/openapi.yaml
+        go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 \
+          --config api/oapi-codegen.yaml -package api \
+          -o apps/market-data-service/internal/api/api.gen.go \
+          apps/market-data-service/openapi.yaml
 
   pipelines:
     profiles: [all, apps]
