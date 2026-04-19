@@ -26,8 +26,21 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="brand">
         <div>
-          <div className="brand-name">RiskOps</div>
+          <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div className="brand-name">RiskOps</div>
+          </Link>
           <div className="brand-sub">Core MVP · v1.0</div>
+          <div style={{ marginTop: 4, fontSize: 10, color: 'var(--ink-4)', lineHeight: 1.4 }}>
+            Created by{' '}
+            <a
+              href="https://t.me/khadzakos"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'var(--primary)', textDecoration: 'none', fontWeight: 500 }}
+            >
+              Nikolay Khadzakos
+            </a>
+          </div>
         </div>
       </div>
 
@@ -72,11 +85,23 @@ export function Topbar({ crumbs }: { crumbs: string[] }) {
           </React.Fragment>
         ))}
       </div>
-      <button className="topbar-btn">
+      <button
+        className="topbar-btn"
+        style={{
+          background: 'var(--primary)',
+          color: '#FBF7EE',
+          borderRadius: 6,
+          padding: '4px 10px',
+          border: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          cursor: 'pointer',
+        }}
+      >
         <Icons.refresh size={14} />
-        <span className="mono" style={{ fontSize: 11, color: 'var(--ink-4)' }}>{now}</span>
+        <span className="mono" style={{ fontSize: 11, color: 'rgba(251,247,238,0.8)' }}>{now}</span>
       </button>
-      <button className="topbar-btn"><Icons.bell size={14} /></button>
     </div>
   );
 }

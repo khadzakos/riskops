@@ -1,14 +1,16 @@
 """FastAPI routes for the Inference Service.
 
 Endpoints:
-  POST /api/risk/predict          — compute risk metrics for a portfolio
-  GET  /api/risk/predict/health   — model health check (which models are loaded)
+  POST /api/risk/predict              — compute risk metrics for a portfolio
+  GET  /api/risk/predict/health       — model health check (which models are loaded)
+  GET  /api/risk/scenarios            — list available stress scenarios
+  POST /api/risk/scenarios/run        — run a stress test scenario
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -18,6 +20,7 @@ from ..config import get_settings
 from ..db import get_engine
 from ..models.loader import get_registry
 from ..models.predictor import PredictionResult, predict
+from ..scenarios import SCENARIOS, StressRequest, run_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -182,4 +185,176 @@ async def model_health() -> ModelHealthResponse:
         status="ok" if loaded else "degraded",
         loaded_models=loaded,
         fallback_available=True,  # historical simulation always available
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stress testing / scenario endpoints
+# ---------------------------------------------------------------------------
+
+class ScenarioInfo(BaseModel):
+    id: str
+    type: str
+    name: str
+    description: str
+    # Parametric-only fields (None for historical)
+    vol_multiplier: Optional[float] = None
+    corr_shock: Optional[float] = None
+    # Historical-only fields (None for parametric)
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+
+
+class ScenariosListResponse(BaseModel):
+    scenarios: list[ScenarioInfo]
+    total: int
+
+
+class ScenarioRunRequest(BaseModel):
+    portfolio_id: int = Field(..., description="Portfolio ID to stress-test")
+    scenario_id: str = Field(
+        ...,
+        description=(
+            "Scenario key: historical_2008 | historical_2020 | historical_1998 | "
+            "parametric_mild | parametric_severe | custom"
+        ),
+    )
+    # Optional overrides / custom scenario params
+    vol_multiplier: Optional[float] = Field(
+        None,
+        ge=1.0,
+        le=20.0,
+        description="Volatility multiplier (required for custom, optional override for parametric)",
+    )
+    corr_shock: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Push pairwise correlations toward 1 (0 = no shock, 1 = perfect correlation)",
+    )
+    n_simulations: int = Field(
+        50_000,
+        ge=1_000,
+        le=500_000,
+        description="Number of Monte Carlo draws for the stressed P&L distribution",
+    )
+    alpha: float = Field(
+        0.99,
+        ge=0.9,
+        le=0.9999,
+        description="VaR confidence level",
+    )
+    lookback_days: int = Field(
+        252,
+        ge=30,
+        le=2520,
+        description="Historical window (days) used to estimate current portfolio μ/σ",
+    )
+
+
+class ScenarioRunResponse(BaseModel):
+    portfolio_id: int
+    scenario_id: str
+    scenario_name: str
+    scenario_type: str
+    # Stressed risk metrics
+    stressed_var: float
+    stressed_cvar: float
+    max_drawdown: float
+    worst_day: float
+    p10_return: float
+    p1_return: float
+    mean_return: float
+    # Metadata
+    n_observations: int
+    description: str
+    computed_at: str
+
+
+@router.get("/api/risk/scenarios", response_model=ScenariosListResponse)
+async def list_scenarios() -> ScenariosListResponse:
+    """Return the catalogue of built-in stress scenarios.
+
+    Each entry describes either a **historical replay** scenario (with a
+    crisis period) or a **parametric stress** scenario (with vol_multiplier
+    and corr_shock).  Pass the ``id`` field to ``POST /api/risk/scenarios/run``.
+    """
+    items: list[ScenarioInfo] = []
+    for sid, sdef in SCENARIOS.items():
+        period = sdef.get("period")
+        items.append(
+            ScenarioInfo(
+                id=sid,
+                type=sdef["type"],
+                name=sdef["name"],
+                description=sdef.get("description", ""),
+                vol_multiplier=sdef.get("vol_multiplier"),
+                corr_shock=sdef.get("corr_shock"),
+                period_start=period[0] if period else None,
+                period_end=period[1] if period else None,
+            )
+        )
+    return ScenariosListResponse(scenarios=items, total=len(items))
+
+
+@router.post("/api/risk/scenarios/run", response_model=ScenarioRunResponse)
+async def run_stress_scenario(body: ScenarioRunRequest) -> ScenarioRunResponse:
+    """Run a stress test scenario for a portfolio.
+
+    Supports two scenario families:
+
+    * **Historical replay** (``historical_2008``, ``historical_2020``,
+      ``historical_1998``) — applies actual crisis-period returns (scaled to
+      current portfolio volatility) to produce a stressed P&L distribution.
+      Falls back to a parametric approximation when the DB has no data for
+      the crisis period (e.g. synthetic data only).
+
+    * **Parametric stress** (``parametric_mild``, ``parametric_severe``,
+      ``custom``) — scales portfolio volatility by ``vol_multiplier`` and
+      pushes correlations toward 1 via ``corr_shock``, then simulates a
+      GBM-based P&L distribution.
+
+    Returns stressed VaR, CVaR, Max Drawdown, worst-day return, and
+    percentile statistics of the simulated P&L distribution.
+    """
+    logger.info(
+        "Stress scenario request: portfolio=%d  scenario=%s  alpha=%.4f  n_sim=%d",
+        body.portfolio_id, body.scenario_id, body.alpha, body.n_simulations,
+    )
+
+    req = StressRequest(
+        portfolio_id=body.portfolio_id,
+        scenario_id=body.scenario_id,
+        vol_multiplier=body.vol_multiplier,
+        corr_shock=body.corr_shock,
+        n_simulations=body.n_simulations,
+        alpha=body.alpha,
+        lookback_days=body.lookback_days,
+    )
+
+    try:
+        result = run_scenario(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Stress scenario failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Stress scenario failed: {exc}") from exc
+
+    return ScenarioRunResponse(
+        portfolio_id=result.portfolio_id,
+        scenario_id=result.scenario_id,
+        scenario_name=result.scenario_name,
+        scenario_type=result.scenario_type,
+        stressed_var=result.stressed_var,
+        stressed_cvar=result.stressed_cvar,
+        max_drawdown=result.max_drawdown,
+        worst_day=result.worst_day,
+        p10_return=result.p10_return,
+        p1_return=result.p1_return,
+        mean_return=result.mean_return,
+        n_observations=result.n_observations,
+        description=result.description,
+        computed_at=result.computed_at,
     )

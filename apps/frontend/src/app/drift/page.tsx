@@ -210,17 +210,6 @@ export default function DriftPage() {
               </div>
             )}
 
-            {/* Returns distribution */}
-            {bins.length > 0 && (
-              <div className="card">
-                <div className="card-head">
-                  <div className="card-title">Распределение доходностей</div>
-                  <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{allReturns.length} наблюдений</span>
-                </div>
-                <Histogram bins={bins} height={200} />
-              </div>
-            )}
-
             {returns.length === 0 && (
               <div className="empty-state" style={{ marginTop: 40 }}>
                 <div style={{ fontSize: 32, marginBottom: 8 }}>📈</div>

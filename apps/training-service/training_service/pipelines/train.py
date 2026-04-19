@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import pickle
+import socket
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -254,6 +255,13 @@ def _train_garch_pipeline(
         # Register model version in MLflow Model Registry
         model_version_str = _register_mlflow_model(run_id, model_name)
 
+    # Publish model.trained Kafka event so Inference Service hot-reloads
+    _publish_model_trained(
+        model_name=model_name,
+        model_version=model_version_str,
+        run_id=run_id,
+    )
+
     # --- Out-of-sample backtest (appended to the same MLflow run) ---
     # Requires at least lookback_days + min_test_days observations.
     # If data is insufficient, skip silently — training result is still valid.
@@ -418,6 +426,13 @@ def _train_montecarlo_pipeline(
 
         model_version_str = _register_mlflow_model(run_id, model_name)
 
+    # Publish model.trained Kafka event so Inference Service hot-reloads
+    _publish_model_trained(
+        model_name=model_name,
+        model_version=model_version_str,
+        run_id=run_id,
+    )
+
     # --- Out-of-sample backtest (appended to the same MLflow run) ---
     # Use historical simulation for MC pipeline — it's fast and model-agnostic.
     # A full MC rolling backtest can be triggered via POST /api/risk/backtest.
@@ -506,6 +521,63 @@ def _register_mlflow_model(run_id: str, model_name: str) -> str:
     except Exception as exc:
         logger.warning("Could not register MLflow model: %s", exc)
         return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Kafka producer — publish model.trained event
+# ---------------------------------------------------------------------------
+
+def _publish_model_trained(
+    model_name: str,
+    model_version: str,
+    run_id: str,
+) -> None:
+    """Publish a ``model.trained`` Kafka event so the Inference Service can
+    hot-reload the new model version without a container restart.
+
+    Failures are non-fatal: if Kafka is unavailable the training result is
+    still valid — the Inference Service will pick up the new model on its
+    next restart or via the MLflow registry poll.
+    """
+    cfg = get_settings()
+    brokers = [b.strip() for b in cfg.kafka_brokers.split(",")]
+    topic = cfg.kafka_topic_model_trained
+
+    payload = json.dumps({
+        "model_name": model_name,
+        "version": model_version,
+        "run_id": run_id,
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+    }).encode("utf-8")
+
+    try:
+        from kafka import KafkaProducer
+        from kafka.errors import KafkaError
+
+        producer = KafkaProducer(
+            bootstrap_servers=brokers,
+            acks="all",
+            retries=3,
+            request_timeout_ms=10_000,
+        )
+        future = producer.send(topic, value=payload)
+        producer.flush(timeout=10)
+        record_metadata = future.get(timeout=10)
+        logger.info(
+            "Published model.trained: model=%s version=%s run_id=%s "
+            "→ topic=%s partition=%d offset=%d",
+            model_name, model_version, run_id,
+            record_metadata.topic, record_metadata.partition, record_metadata.offset,
+        )
+        producer.close()
+    except (ImportError, socket.gaierror, OSError) as exc:
+        logger.warning(
+            "Kafka not available — model.trained event not published (non-fatal): %s", exc
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to publish model.trained event (non-fatal): %s", exc
+        )
 
 
 # ---------------------------------------------------------------------------

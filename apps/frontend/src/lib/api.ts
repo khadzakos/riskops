@@ -174,6 +174,41 @@ export interface ModelHealthResponse {
   fallback_available: boolean;
 }
 
+// ─── Stress Testing / Scenarios ──────────────────────────────────────────────
+
+export interface ScenarioInfo {
+  id: string;
+  type: 'historical' | 'parametric';
+  name: string;
+  description: string;
+  vol_multiplier?: number | null;
+  corr_shock?: number | null;
+  period_start?: string | null;
+  period_end?: string | null;
+}
+
+export interface ScenariosListResponse {
+  scenarios: ScenarioInfo[];
+  total: number;
+}
+
+export interface ScenarioRunResponse {
+  portfolio_id: number;
+  scenario_id: string;
+  scenario_name: string;
+  scenario_type: string;
+  stressed_var: number;
+  stressed_cvar: number;
+  max_drawdown: number;
+  worst_day: number;
+  p10_return: number;
+  p1_return: number;
+  mean_return: number;
+  n_observations: number;
+  description: string;
+  computed_at: string;
+}
+
 export const inferenceApi = {
   predict: (body: {
     portfolio_id: number;
@@ -182,6 +217,22 @@ export const inferenceApi = {
     horizon_days?: number;
   }) => apiFetch<PredictResponse>('/risk/predict', { method: 'POST', body: JSON.stringify(body) }),
   health: () => apiFetch<ModelHealthResponse>('/risk/predict/health'),
+
+  // Stress testing
+  listScenarios: () => apiFetch<ScenariosListResponse>('/risk/scenarios'),
+  runScenario: (body: {
+    portfolio_id: number;
+    scenario_id: string;
+    vol_multiplier?: number;
+    corr_shock?: number;
+    n_simulations?: number;
+    alpha?: number;
+    lookback_days?: number;
+  }) =>
+    apiFetch<ScenarioRunResponse>('/risk/scenarios/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // ─── Training Service ─────────────────────────────────────────────────────────

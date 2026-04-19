@@ -269,15 +269,15 @@ export default function DashboardPage() {
                 <div className="card-head">
                   <div className="card-title">История риска</div>
                   {chartSeries.length > 0 && (
-                    <div className="row" style={{ gap: 12 }}>
-                      {chartSeries.map((s) => (
-                        <div key={s.name} className="row" style={{ gap: 4, alignItems: 'center' }}>
-                          <div style={{ width: 10, height: 2, background: s.color }} />
-                          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{s.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                      <div className="row" style={{ gap: 12 }}>
+                        {chartSeries.map((s) => (
+                          <div key={s.name} className="row" style={{ gap: 6, alignItems: 'center' }}>
+                            <div style={{ width: 14, height: 3, background: s.color, borderRadius: 2, flexShrink: 0 }} />
+                            <span style={{ fontSize: 11, color: 'var(--ink)', fontFamily: 'var(--mono)', fontWeight: 500 }}>{s.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                 </div>
                 {riskLoading ? (
                   <Skeleton height={240} />

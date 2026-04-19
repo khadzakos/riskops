@@ -2,17 +2,15 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Topbar, PageHead, Pill, ErrorBanner, Skeleton } from '@/components/Shell';
-import { LineChart, Histogram, Donut, makeBins, type LineSeries } from '@/components/Charts';
+import { LineChart, Donut, type LineSeries } from '@/components/Charts';
 import {
   portfolioApi,
-  marketDataApi,
   inferenceApi,
   extractMetric,
   groupByMetric,
   type Portfolio,
   type Position,
   type RiskResult,
-  type ProcessedReturn,
   type PredictResponse,
 } from '@/lib/api';
 
@@ -28,35 +26,35 @@ interface MetricInfo {
 const METRIC_INFO: Record<string, MetricInfo> = {
   'VaR (95%)': {
     description: 'Value at Risk — максимальный ожидаемый убыток портфеля за 1 день с вероятностью 95%.',
-    interpretation: 'Например, VaR 2% означает: в 95% случаев дневной убыток не превысит 2% от стоимости портфеля. Чем меньше — тем ниже риск.',
+    interpretation: 'Например, VaR 2% означает: в 95% случаев дневной убыток не превысит 2%. Чем меньше — тем ниже риск.',
   },
   'CVaR (95%)': {
     description: 'Conditional VaR (Expected Shortfall) — средний убыток в худших 5% сценариев.',
-    interpretation: 'Показывает, сколько в среднем теряет портфель, когда убыток превышает VaR. CVaR всегда ≥ VaR. Более консервативная мера риска.',
+    interpretation: 'CVaR всегда ≥ VaR. Более консервативная мера риска — показывает средний убыток при экстремальных событиях.',
   },
   'Волатильность': {
-    description: 'Стандартное отклонение дневных доходностей портфеля (аннуализированное).',
-    interpretation: '< 10% — низкая, 10–20% — умеренная, > 20% — высокая. Высокая волатильность означает большую неопределённость доходности.',
+    description: 'Стандартное отклонение дневных доходностей (аннуализированное).',
+    interpretation: '< 10% — низкая, 10–20% — умеренная, > 20% — высокая.',
   },
   'Max Drawdown': {
     description: 'Максимальная просадка — наибольшее падение от пика до дна за всю историю.',
-    interpretation: '> −10% — хорошо, −10% … −20% — умеренно, < −20% — высокий риск. Показывает худший сценарий для инвестора, вошедшего на пике.',
+    interpretation: '> −10% — хорошо, −10%…−20% — умеренно, < −20% — высокий риск.',
   },
   'Sharpe': {
     description: 'Коэффициент Шарпа — отношение избыточной доходности к волатильности (rf = 0).',
-    interpretation: '≥ 1 — хорошо, 0–1 — приемлемо, < 0 — портфель хуже безрискового актива. Чем выше — тем лучше доходность на единицу риска.',
+    interpretation: '≥ 1 — хорошо, 0–1 — приемлемо, < 0 — портфель хуже безрискового актива.',
   },
   'Sortino': {
-    description: 'Коэффициент Сортино — как Sharpe, но учитывает только нисходящую волатильность (убытки).',
-    interpretation: '≥ 1 — хорошо, 0–1 — приемлемо, < 0 — убыточный портфель. Более справедлив, чем Sharpe, для асимметричных распределений.',
+    description: 'Коэффициент Сортино — как Sharpe, но учитывает только нисходящую волатильность.',
+    interpretation: '≥ 1 — хорошо, 0–1 — приемлемо, < 0 — убыточный портфель.',
   },
   'Beta (β)': {
-    description: 'Бета — чувствительность портфеля к движениям рынка (бенчмарк = равновзвешенный портфель).',
-    interpretation: 'β < 1 — защитный (меньше рыночного риска), β ≈ 1 — следует рынку, β > 1 — агрессивный (усиливает движения рынка).',
+    description: 'Бета — чувствительность портфеля к движениям рынка.',
+    interpretation: 'β < 1 — защитный, β ≈ 1 — следует рынку, β > 1 — агрессивный.',
   },
   'Сумма весов': {
     description: 'Сумма весов всех позиций в портфеле.',
-    interpretation: 'Должна быть равна 100% для полностью инвестированного портфеля. Отклонение означает незаполненную или перегруженную аллокацию.',
+    interpretation: 'Должна быть равна 100% для полностью инвестированного портфеля.',
   },
 };
 
@@ -81,15 +79,14 @@ function MetricTooltip({ label }: { label: string }) {
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
         style={{
-          background: 'none',
-          border: '1px solid var(--hair)',
+          background: 'var(--bg-2)',
+          border: '1px solid var(--hair-strong)',
           borderRadius: '50%',
           width: 14,
           height: 14,
           fontSize: 9,
-          lineHeight: '12px',
           cursor: 'pointer',
-          color: 'var(--ink-4)',
+          color: 'var(--ink-3)',
           padding: 0,
           display: 'inline-flex',
           alignItems: 'center',
@@ -102,24 +99,37 @@ function MetricTooltip({ label }: { label: string }) {
       </button>
       {open && (
         <div style={{
-          position: 'absolute',
-          bottom: 'calc(100% + 6px)',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: 240,
-          background: 'var(--surface-1)',
-          border: '1px solid var(--hair)',
+          position: 'fixed',
+          width: 260,
+          background: '#FFFFFF',
+          border: '1px solid #CCCCCC',
           borderRadius: 8,
-          padding: '10px 12px',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
-          zIndex: 200,
+          padding: '12px 14px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10)',
+          zIndex: 9999,
           fontSize: 11,
-          lineHeight: 1.5,
+          lineHeight: 1.55,
+          opacity: 1,
+          // Position below the ? button using JS-free approach via transform
+          top: (() => {
+            if (typeof window === 'undefined') return 0;
+            const el = ref.current;
+            if (!el) return 0;
+            const rect = el.getBoundingClientRect();
+            return rect.bottom + 6;
+          })(),
+          left: (() => {
+            if (typeof window === 'undefined') return 0;
+            const el = ref.current;
+            if (!el) return 0;
+            const rect = el.getBoundingClientRect();
+            return Math.max(8, Math.min(rect.left - 120, window.innerWidth - 276));
+          })(),
         }}>
-          <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--ink-1)' }}>{label}</div>
-          <div style={{ color: 'var(--ink-2)', marginBottom: 6 }}>{info.description}</div>
-          <div style={{ color: 'var(--ink-3)', borderTop: '1px solid var(--hair)', paddingTop: 6 }}>
-            <span style={{ fontWeight: 600, color: 'var(--ink-2)' }}>Интерпретация: </span>
+          <div style={{ fontWeight: 700, marginBottom: 5, color: '#111111', fontSize: 12 }}>{label}</div>
+          <div style={{ color: '#333333', marginBottom: 8 }}>{info.description}</div>
+          <div style={{ color: '#666666', borderTop: '1px solid #E4E4E4', paddingTop: 8 }}>
+            <span style={{ fontWeight: 600, color: '#333333' }}>Интерпретация: </span>
             {info.interpretation}
           </div>
         </div>
@@ -164,8 +174,8 @@ function CreatePortfolioModal({ onClose, onCreate }: CreatePortfolioModalProps) 
     }} onClick={onClose}>
       <div
         style={{
-          background: 'var(--surface-1)',
-          border: '1px solid var(--hair)',
+          background: '#FFFFFF',
+          border: '1px solid #CCCCCC',
           borderRadius: 10,
           padding: 28,
           width: 420,
@@ -237,7 +247,6 @@ export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [latestRisk, setLatestRisk] = useState<RiskResult[]>([]);
   const [riskHistory, setRiskHistory] = useState<RiskResult[]>([]);
-  const [returns, setReturns] = useState<ProcessedReturn[]>([]);
   const [predictResult, setPredictResult] = useState<PredictResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(false);
@@ -280,22 +289,11 @@ export default function PortfolioPage() {
       setLatestRisk(latest);
       setRiskHistory(history);
 
-      // Fetch full prediction result (includes new risk metrics)
       try {
         const pred = await inferenceApi.predict({ portfolio_id: id });
         setPredictResult(pred);
       } catch {
-        // Non-fatal: inference service may be unavailable
         setPredictResult(null);
-      }
-
-      // Load returns for all symbols in portfolio
-      if (pos.length > 0) {
-        const symbols = pos.map((p) => p.symbol).join(',');
-        const ret = await marketDataApi.getReturns({ symbols, limit: 500 });
-        setReturns(ret);
-      } else {
-        setReturns([]);
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки');
@@ -341,40 +339,28 @@ export default function PortfolioPage() {
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const selectedPortfolio = portfolios.find((p) => p.id === selectedId) ?? null;
-  const byMetric = groupByMetric(latestRisk);
   const historyByMetric = groupByMetric(riskHistory);
 
   const varVal = extractMetric(latestRisk, 'var');
   const cvarVal = extractMetric(latestRisk, 'cvar');
   const volVal = extractMetric(latestRisk, 'volatility');
 
-  // New metrics from inference service predict response
   const mddVal = predictResult?.max_drawdown ?? null;
   const sharpeVal = predictResult?.sharpe_ratio ?? null;
   const sortinoVal = predictResult?.sortino_ratio ?? null;
   const betaVal = predictResult?.beta_to_benchmark ?? null;
 
-  // Color helpers for ratio-based metrics
   const sharpeColor = sharpeVal === null ? 'var(--ink-4)' : sharpeVal >= 1 ? 'var(--good)' : sharpeVal >= 0 ? 'var(--warn)' : 'var(--crit)';
   const sortinoColor = sortinoVal === null ? 'var(--ink-4)' : sortinoVal >= 1 ? 'var(--good)' : sortinoVal >= 0 ? 'var(--warn)' : 'var(--crit)';
   const mddColor = mddVal === null ? 'var(--ink-4)' : mddVal > -0.1 ? 'var(--good)' : mddVal > -0.2 ? 'var(--warn)' : 'var(--crit)';
-  // Beta: ~1 = market-neutral, <1 = defensive, >1 = aggressive
   const betaColor = betaVal === null ? 'var(--ink-4)' : betaVal >= 0.8 && betaVal <= 1.2 ? 'var(--accent)' : betaVal < 0.8 ? 'var(--good)' : 'var(--warn)';
 
-  // Chart series
   const chartSeries: LineSeries[] = [];
   const varSorted = (historyByMetric['var'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
   const cvarSorted = (historyByMetric['cvar'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
   if (varSorted.length > 0) chartSeries.push({ name: 'VaR', color: 'var(--primary)', data: varSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
   if (cvarSorted.length > 0) chartSeries.push({ name: 'CVaR', color: 'var(--crit)', data: cvarSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
 
-  // Returns histogram
-  const allReturns = returns.map((r) => r.ret);
-  const bins = allReturns.length > 0 ? makeBins(allReturns) : [];
-  const varMarker = varVal !== null ? [{ x: -varVal, label: `VaR ${(varVal * 100).toFixed(1)}%`, color: 'var(--primary)' }] : [];
-  const cvarMarker = cvarVal !== null ? [{ x: -cvarVal, label: `CVaR ${(cvarVal * 100).toFixed(1)}%`, color: 'var(--crit)' }] : [];
-
-  // Donut
   const donutData = positions.map((p, i) => ({
     label: p.symbol,
     value: Math.abs(p.weight),
@@ -382,6 +368,17 @@ export default function PortfolioPage() {
   }));
 
   const totalWeight = positions.reduce((s, p) => s + p.weight, 0);
+
+  const kpis = [
+    { label: 'VaR (95%)', value: varVal !== null ? `${(varVal * 100).toFixed(2)}%` : null, color: 'var(--primary)' },
+    { label: 'CVaR (95%)', value: cvarVal !== null ? `${(cvarVal * 100).toFixed(2)}%` : null, color: 'var(--crit)' },
+    { label: 'Волатильность', value: volVal !== null ? `${(volVal * 100).toFixed(2)}%` : null, color: 'var(--ink-2)' },
+    { label: 'Max Drawdown', value: mddVal !== null ? `${(mddVal * 100).toFixed(2)}%` : null, color: mddColor },
+    { label: 'Sharpe', value: sharpeVal !== null ? sharpeVal.toFixed(2) : null, color: sharpeColor },
+    { label: 'Sortino', value: sortinoVal !== null ? sortinoVal.toFixed(2) : null, color: sortinoColor },
+    { label: 'Beta (β)', value: betaVal !== null ? betaVal.toFixed(2) : null, color: betaColor },
+    { label: 'Сумма весов', value: positions.length > 0 ? `${(totalWeight * 100).toFixed(1)}%` : null, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)' },
+  ];
 
   return (
     <>
@@ -392,11 +389,7 @@ export default function PortfolioPage() {
           title="Портфель"
           sub={selectedPortfolio ? `${selectedPortfolio.name} · ${selectedPortfolio.currency}` : ''}
         >
-          <button
-            className="btn-secondary"
-            onClick={() => setShowCreateModal(true)}
-            style={{ marginRight: 8 }}
-          >
+          <button className="btn-primary" onClick={() => setShowCreateModal(true)} style={{ marginRight: 8 }}>
             + Новый портфель
           </button>
           <button className="btn-secondary" onClick={() => selectedId && loadData(selectedId)} disabled={dataLoading}>
@@ -425,7 +418,7 @@ export default function PortfolioPage() {
 
         {/* Portfolio selector */}
         {!loading && portfolios.length > 0 && (
-          <div className="row" style={{ gap: 8, marginBottom: 16 }}>
+          <div className="row" style={{ gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
             {portfolios.map((p) => (
               <button
                 key={p.id}
@@ -436,6 +429,29 @@ export default function PortfolioPage() {
                 {p.name}
               </button>
             ))}
+            {selectedId !== null && (
+              <button
+                className="btn-secondary"
+                style={{ fontSize: 12, color: 'var(--crit)', borderColor: 'var(--crit)', marginLeft: 'auto' }}
+                onClick={async () => {
+                  if (!selectedId) return;
+                  if (!confirm(`Удалить портфель «${portfolios.find((p) => p.id === selectedId)?.name}»? Это действие необратимо.`)) return;
+                  try {
+                    await portfolioApi.delete(selectedId);
+                    const ps = await refreshPortfolios();
+                    setSelectedId(ps.length > 0 ? ps[0].id : null);
+                    setPositions([]);
+                    setLatestRisk([]);
+                    setRiskHistory([]);
+                    setPredictResult(null);
+                  } catch (e: unknown) {
+                    setError(e instanceof Error ? e.message : 'Ошибка удаления портфеля');
+                  }
+                }}
+              >
+              Удалить портфель
+            </button>
+            )}
           </div>
         )}
 
@@ -444,24 +460,15 @@ export default function PortfolioPage() {
         ) : (
           <>
             {/* KPI strip */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 12, marginBottom: 20 }}>
-              {[
-                { label: 'VaR (95%)', value: varVal !== null ? `${(varVal * 100).toFixed(2)}%` : null, color: 'var(--primary)' },
-                { label: 'CVaR (95%)', value: cvarVal !== null ? `${(cvarVal * 100).toFixed(2)}%` : null, color: 'var(--crit)' },
-                { label: 'Волатильность', value: volVal !== null ? `${(volVal * 100).toFixed(2)}%` : null, color: 'var(--accent)' },
-                { label: 'Max Drawdown', value: mddVal !== null ? `${(mddVal * 100).toFixed(2)}%` : null, color: mddColor },
-                { label: 'Sharpe', value: sharpeVal !== null ? sharpeVal.toFixed(2) : null, color: sharpeColor },
-                { label: 'Sortino', value: sortinoVal !== null ? sortinoVal.toFixed(2) : null, color: sortinoColor },
-                { label: 'Beta (β)', value: betaVal !== null ? betaVal.toFixed(2) : null, color: betaColor },
-                { label: 'Сумма весов', value: positions.length > 0 ? `${(totalWeight * 100).toFixed(1)}%` : null, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)' },
-              ].map((kpi) => (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 10, marginBottom: 20 }}>
+              {kpis.map((kpi) => (
                 <div key={kpi.label} className="metric-card">
                   <div className="metric-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span>{kpi.label}</span>
                     <MetricTooltip label={kpi.label} />
                   </div>
-                  {dataLoading ? <Skeleton height={28} width="60%" /> : (
-                    <div className="metric-value" style={{ color: kpi.value ? kpi.color : 'var(--ink-4)', fontSize: kpi.value ? undefined : 16 }}>
+                  {dataLoading ? <Skeleton height={24} width="60%" /> : (
+                    <div className="metric-value" style={{ color: kpi.value ? kpi.color : 'var(--ink-4)', fontSize: kpi.value ? 22 : 16 }}>
                       {kpi.value ?? '—'}
                     </div>
                   )}
@@ -477,7 +484,7 @@ export default function PortfolioPage() {
                   <Pill variant={positions.length > 0 ? 'good' : ''}>{positions.length} позиций</Pill>
                 </div>
 
-                {dataLoading ? <Skeleton height={160} /> : positions.length > 0 ? (
+                {dataLoading ? <Skeleton height={140} /> : positions.length > 0 ? (
                   <table className="data-table">
                     <thead>
                       <tr>
@@ -491,8 +498,8 @@ export default function PortfolioPage() {
                       {positions.map((p, i) => (
                         <tr key={p.symbol}>
                           <td>
-                            <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
+                            <div className="row" style={{ gap: 6 }}>
+                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length], flexShrink: 0 }} />
                               <span className="mono">{p.symbol}</span>
                             </div>
                           </td>
@@ -555,7 +562,7 @@ export default function PortfolioPage() {
                     <Donut data={donutData} size={180} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {donutData.map((d) => (
-                        <div key={d.label} className="row" style={{ gap: 6, alignItems: 'center' }}>
+                        <div key={d.label} className="row" style={{ gap: 6 }}>
                           <div style={{ width: 10, height: 10, borderRadius: '50%', background: d.color, flexShrink: 0 }} />
                           <span className="mono" style={{ fontSize: 12 }}>{d.label}</span>
                           <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{(d.value * 100).toFixed(1)}%</span>
@@ -571,12 +578,12 @@ export default function PortfolioPage() {
 
             {/* Risk history chart */}
             {chartSeries.length > 0 && (
-              <div className="card" style={{ marginBottom: 20 }}>
+              <div className="card">
                 <div className="card-head">
-                  <div className="card-title">История риска</div>
+                  <div className="card-title">История риска (90 дней)</div>
                   <div className="row" style={{ gap: 12 }}>
                     {chartSeries.map((s) => (
-                      <div key={s.name} className="row" style={{ gap: 4, alignItems: 'center' }}>
+                      <div key={s.name} className="row" style={{ gap: 4 }}>
                         <div style={{ width: 10, height: 2, background: s.color }} />
                         <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{s.name}</span>
                       </div>
@@ -585,25 +592,10 @@ export default function PortfolioPage() {
                 </div>
                 <LineChart
                   series={chartSeries}
-                  height={220}
+                  height={200}
                   yFormat={(v) => `${(v * 100).toFixed(1)}%`}
                   xFormat={(v) => String(v).slice(5)}
                   fillArea
-                />
-              </div>
-            )}
-
-            {/* Returns histogram */}
-            {bins.length > 0 && (
-              <div className="card">
-                <div className="card-head">
-                  <div className="card-title">Распределение доходностей</div>
-                  <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{allReturns.length} наблюдений</span>
-                </div>
-                <Histogram
-                  bins={bins}
-                  height={200}
-                  markers={[...varMarker, ...cvarMarker]}
                 />
               </div>
             )}
