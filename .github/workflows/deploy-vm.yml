@@ -9,8 +9,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  compute-services:
     runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.map.outputs.services }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,11 +49,15 @@ jobs:
           echo "services=${SERVICES}" >> "${GITHUB_OUTPUT}"
           echo "Compose redeploy targets: [${SERVICES:-<none — git sync only>}]"
 
+  deploy-vm:
+    needs: compute-services
+    runs-on: ubuntu-latest
+    steps:
       # Всегда подтягиваем main на ВМ; docker-compose --build только если маппинг вернул сервисы.
       - name: Sync repo on VM (redeploy services only if mapped)
         uses: appleboy/ssh-action@v1.2.0
         env:
-          SERVICES: ${{ steps.map.outputs.services }}
+          SERVICES: ${{ needs.compute-services.outputs.services }}
           DEPLOY_PATH: ${{ secrets.VM_DEPLOY_PATH }}
         with:
           host: ${{ secrets.VM_HOST }}
