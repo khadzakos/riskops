@@ -45,14 +45,10 @@ jobs:
           chmod +x scripts/ci/map_changes_to_compose_services.sh
           SERVICES="$(scripts/ci/map_changes_to_compose_services.sh changed_files.txt | tr -d '\r')"
           echo "services=${SERVICES}" >> "${GITHUB_OUTPUT}"
-          echo "Compose targets: [${SERVICES}]"
+          echo "Compose redeploy targets: [${SERVICES:-<none — git sync only>}]"
 
-      - name: Skip (no matching services)
-        if: steps.map.outputs.services == ''
-        run: echo "No mapped compose services for this push; skipping deploy."
-
-      - name: Deploy over SSH
-        if: steps.map.outputs.services != ''
+      # Всегда подтягиваем main на ВМ; docker compose --build только если маппинг вернул сервисы.
+      - name: Sync repo on VM (redeploy services only if mapped)
         uses: appleboy/ssh-action@v1.2.0
         env:
           SERVICES: ${{ steps.map.outputs.services }}
@@ -65,10 +61,15 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
+            SERVICES="${SERVICES:-}"
             cd "${DEPLOY_PATH}"
             git fetch origin main
             git checkout main
             git pull --ff-only origin main
+            if [[ -z "${SERVICES}" ]]; then
+              echo "No mapped compose services; git sync done, skipping docker compose --build."
+              exit 0
+            fi
             if [[ "${SERVICES}" == "ALL_APPS" ]]; then
               docker compose --profile apps --profile airflow --profile observability up -d --build
               exit 0
