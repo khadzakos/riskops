@@ -1,0 +1,14 @@
+# Reverse proxy for RiskOps (docker network: caddy → frontend).
+# Публичный вход: http://<IP>/  → контейнер frontend:3000
+#
+# Когда будет домен, замените блок :80 на что-то вроде:
+#
+#   example.com {
+#     reverse_proxy frontend:3000
+#   }
+#
+# Caddy сам получит Let's Encrypt (нужны открытые 80 и 443 и DNS на эту ВМ).
+
+:80 {
+	reverse_proxy frontend:3000
+}

@@ -309,7 +309,8 @@ services:
       context: ./apps/frontend
       dockerfile: Dockerfile
     ports:
-      - "3002:3000"
+      # Только localhost: снаружи фронт доступен через сервис caddy (:80 / :443)
+      - "127.0.0.1:3002:3000"
     environment:
       API_URL: http://gateway:8081
       NEXT_PUBLIC_API_URL: http://localhost:8081
@@ -320,6 +321,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  caddy:
+    profiles: [all, apps]
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      frontend:
+        condition: service_healthy
 
   pipelines:
     profiles: [all, apps]
@@ -374,3 +388,4 @@ volumes:
   mlflow_artifacts:
   airflow_logs:
   grafana_data:
+  caddy_data:

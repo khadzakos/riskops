@@ -76,6 +76,9 @@ while IFS= read -r f || [[ -n "${f}" ]]; do
     infra/db/*)
       add db
       ;;
+    infra/caddy/*|infra/caddy)
+      add caddy
+      ;;
     *)
       ;;
   esac
