@@ -1,0 +1,83 @@
+name: Deploy to VM (selective)
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-vm-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute changed files
+        id: diff
+        run: |
+          set -euo pipefail
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [[ "${BEFORE}" == "0000000000000000000000000000000000000000" ]]; then
+            BEFORE="$(git rev-parse "${AFTER}^" 2>/dev/null || true)"
+          fi
+          if [[ -z "${BEFORE}" ]]; then
+            git fetch origin main --depth=2
+            BEFORE="$(git rev-parse origin/main^ 2>/dev/null || true)"
+          fi
+          if [[ -z "${BEFORE}" ]]; then
+            echo "Could not resolve before SHA; listing only current tree (first deploy)." >&2
+            git ls-files -z | tr '\0' '\n' > changed_files.txt
+          else
+            git diff --name-only "${BEFORE}" "${AFTER}" > changed_files.txt
+          fi
+          echo "Changed files:"
+          cat changed_files.txt
+
+      - name: Map changes to compose services
+        id: map
+        run: |
+          set -euo pipefail
+          chmod +x scripts/ci/map_changes_to_compose_services.sh
+          SERVICES="$(scripts/ci/map_changes_to_compose_services.sh changed_files.txt | tr -d '\r')"
+          echo "services=${SERVICES}" >> "${GITHUB_OUTPUT}"
+          echo "Compose targets: [${SERVICES}]"
+
+      - name: Skip (no matching services)
+        if: steps.map.outputs.services == ''
+        run: echo "No mapped compose services for this push; skipping deploy."
+
+      - name: Deploy over SSH
+        if: steps.map.outputs.services != ''
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          SERVICES: ${{ steps.map.outputs.services }}
+          DEPLOY_PATH: ${{ secrets.VM_DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          envs: SERVICES,DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH}"
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            if [[ "${SERVICES}" == "ALL_APPS" ]]; then
+              docker compose --profile apps --profile airflow --profile observability up -d --build
+              exit 0
+            fi
+            PROFILES=(--profile apps)
+            case "${SERVICES}" in
+              *prometheus*|*grafana*) PROFILES+=(--profile observability) ;;
+            esac
+            case "${SERVICES}" in
+              *airflow*) PROFILES+=(--profile airflow) ;;
+            esac
+            docker compose "${PROFILES[@]}" up -d --build ${SERVICES}
