@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     # MinIO / S3
     aws_access_key_id: str = "riskops"
     aws_secret_access_key: str = "riskops123"
-    s3_bucket_models: str = "riskops-models"
 
     # Kafka
     kafka_brokers: str = "kafka:9092"

@@ -73,7 +73,6 @@ services:
       sh -c "
         mc alias set local http://minio:9000 riskops riskops123 &&
         mc mb --ignore-existing local/mlflow-artifacts &&
-        mc mb --ignore-existing local/riskops-models &&
         echo 'MinIO buckets ready'
       "
 
@@ -252,7 +251,6 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: riskops
       AWS_SECRET_ACCESS_KEY: riskops123
-      S3_BUCKET_MODELS: riskops-models
       KAFKA_BROKERS: kafka:9092
       KAFKA_CONSUMER_GROUP: training-service
       KAFKA_TOPIC_MARKET_DATA: market.data.ingested
@@ -286,7 +284,6 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: riskops
       AWS_SECRET_ACCESS_KEY: riskops123
-      S3_BUCKET_MODELS: riskops-models
       KAFKA_BROKERS: kafka:9092
       KAFKA_CONSUMER_GROUP: inference-service
       KAFKA_TOPIC_PORTFOLIO_UPDATED: portfolio.updated

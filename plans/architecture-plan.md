@@ -956,6 +956,8 @@ A real backtest requires out-of-sample rolling window evaluation with formal sta
 
 #### 4. Отсутие макропоказателей!!!
 
+#### 5. Необходимо добавить корреляцию между активвами и матрицу корреляции на фронт!!!!!
+
 ### Significant Issues (degrade quality)
 
 #### 6. Double model registration (MLflow + Postgres) without sync
@@ -968,7 +970,35 @@ Currently only VaR, CVaR, volatility are computed. Missing:
 - **Sharpe Ratio** — return per unit of total risk
 - **Sortino Ratio** — return per unit of downside risk
 - **Beta** — portfolio sensitivity to benchmark (IMOEX, SPY)
-- **Correlation matrix** — between portfolio assets
+- **Correlation matrix** — between portfolio assets !!!!
+
+#### 8. Rolling Volatility not stored (plan §6 diagram shows VOL node, code skips it)
+The architecture diagram in §6 shows `VOL[Rolling Volatility]` as a separate processing step that stores rolling volatility into Postgres and then publishes the Kafka event. In the actual code ([`service/ingest.go:123`](apps/market-data-service/internal/service/ingest.go)) only simple returns are computed and stored; rolling volatility is never persisted.
+
+**Impact:** Training Service and Inference Service cannot read pre-computed volatility from DB — they recompute it from scratch on every training run inside GARCH/MC models. This is acceptable for MVP but means:
+- No historical volatility time series available for Grafana dashboards
+- No volatility-based features for future macro/factor models
+
+**Fix options:**
+- Option A (minimal): add a `rolling_volatility` table and compute 20-day / 60-day rolling std in `returns.go` after `UpsertReturns()`. Publish Kafka event after this step (currently event is published before VOL in the diagram).
+- Option B (skip): accept that volatility lives only inside model artifacts; remove VOL node from the diagram to match reality.
+
+#### 9. `model.trained` Kafka topic not published (plan §9 describes it, code omits it)
+The plan (§9 Kafka Event Design) defines a `model.trained` topic:
+```
+| model.trained | Training Service | Inference Service | {model_name, version, run_id} |
+```
+The Inference Service is also supposed to hot-reload on this event (§8: "On `model.trained` Kafka event: hot-reload new model version").
+
+**In the actual code:**
+- `apps/training-service/training_service/pipelines/train.py` — no `producer.Publish()` call after model registration
+- `apps/inference-service/inference_service/kafka_consumer.py` — listens only on `portfolio.updated`, not on `model.trained`
+
+**Impact:** After a new model is trained and registered in MLflow, the Inference Service continues using the old model loaded at startup. The only way to get the new model is to restart the container.
+
+**Fix:**
+1. Add Kafka producer to Training Service (`pipelines/train.py` — publish `model.trained` after `_register_mlflow_model()`)
+2. Add `model.trained` consumer in `inference_service/kafka_consumer.py` — call `registry.reload(model_name, version)` on receipt
 
 ---
 

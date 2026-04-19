@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Topbar, PageHead, Pill, ErrorBanner, Skeleton } from '@/components/Shell';
 import { LineChart, Histogram, Donut, makeBins, type LineSeries } from '@/components/Charts';
 import {
@@ -17,6 +17,219 @@ import {
 } from '@/lib/api';
 
 const COLORS = ['var(--primary)', 'var(--accent)', '#6b8f71', '#c9a96e', '#8b6f47', '#4a6b3e'];
+
+// ── Metric Tooltip ────────────────────────────────────────────────────────────
+
+interface MetricInfo {
+  description: string;
+  interpretation: string;
+}
+
+const METRIC_INFO: Record<string, MetricInfo> = {
+  'VaR (95%)': {
+    description: 'Value at Risk — максимальный ожидаемый убыток портфеля за 1 день с вероятностью 95%.',
+    interpretation: 'Например, VaR 2% означает: в 95% случаев дневной убыток не превысит 2% от стоимости портфеля. Чем меньше — тем ниже риск.',
+  },
+  'CVaR (95%)': {
+    description: 'Conditional VaR (Expected Shortfall) — средний убыток в худших 5% сценариев.',
+    interpretation: 'Показывает, сколько в среднем теряет портфель, когда убыток превышает VaR. CVaR всегда ≥ VaR. Более консервативная мера риска.',
+  },
+  'Волатильность': {
+    description: 'Стандартное отклонение дневных доходностей портфеля (аннуализированное).',
+    interpretation: '< 10% — низкая, 10–20% — умеренная, > 20% — высокая. Высокая волатильность означает большую неопределённость доходности.',
+  },
+  'Max Drawdown': {
+    description: 'Максимальная просадка — наибольшее падение от пика до дна за всю историю.',
+    interpretation: '> −10% — хорошо, −10% … −20% — умеренно, < −20% — высокий риск. Показывает худший сценарий для инвестора, вошедшего на пике.',
+  },
+  'Sharpe': {
+    description: 'Коэффициент Шарпа — отношение избыточной доходности к волатильности (rf = 0).',
+    interpretation: '≥ 1 — хорошо, 0–1 — приемлемо, < 0 — портфель хуже безрискового актива. Чем выше — тем лучше доходность на единицу риска.',
+  },
+  'Sortino': {
+    description: 'Коэффициент Сортино — как Sharpe, но учитывает только нисходящую волатильность (убытки).',
+    interpretation: '≥ 1 — хорошо, 0–1 — приемлемо, < 0 — убыточный портфель. Более справедлив, чем Sharpe, для асимметричных распределений.',
+  },
+  'Beta (β)': {
+    description: 'Бета — чувствительность портфеля к движениям рынка (бенчмарк = равновзвешенный портфель).',
+    interpretation: 'β < 1 — защитный (меньше рыночного риска), β ≈ 1 — следует рынку, β > 1 — агрессивный (усиливает движения рынка).',
+  },
+  'Сумма весов': {
+    description: 'Сумма весов всех позиций в портфеле.',
+    interpretation: 'Должна быть равна 100% для полностью инвестированного портфеля. Отклонение означает незаполненную или перегруженную аллокацию.',
+  },
+};
+
+function MetricTooltip({ label }: { label: string }) {
+  const info = METRIC_INFO[label];
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  if (!info) return null;
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        style={{
+          background: 'none',
+          border: '1px solid var(--hair)',
+          borderRadius: '50%',
+          width: 14,
+          height: 14,
+          fontSize: 9,
+          lineHeight: '12px',
+          cursor: 'pointer',
+          color: 'var(--ink-4)',
+          padding: 0,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+        title="Подробнее"
+      >
+        ?
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute',
+          bottom: 'calc(100% + 6px)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: 240,
+          background: 'var(--surface-1)',
+          border: '1px solid var(--hair)',
+          borderRadius: 8,
+          padding: '10px 12px',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
+          zIndex: 200,
+          fontSize: 11,
+          lineHeight: 1.5,
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--ink-1)' }}>{label}</div>
+          <div style={{ color: 'var(--ink-2)', marginBottom: 6 }}>{info.description}</div>
+          <div style={{ color: 'var(--ink-3)', borderTop: '1px solid var(--hair)', paddingTop: 6 }}>
+            <span style={{ fontWeight: 600, color: 'var(--ink-2)' }}>Интерпретация: </span>
+            {info.interpretation}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Create Portfolio Modal ────────────────────────────────────────────────────
+
+interface CreatePortfolioModalProps {
+  onClose: () => void;
+  onCreate: (p: Portfolio) => void;
+}
+
+function CreatePortfolioModal({ onClose, onCreate }: CreatePortfolioModalProps) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [currency, setCurrency] = useState('USD');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleCreate = async () => {
+    if (!name.trim()) { setErr('Название обязательно'); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      const p = await portfolioApi.create({ name: name.trim(), description: description.trim(), currency });
+      onCreate(p);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Ошибка создания');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div
+        style={{
+          background: 'var(--surface-1)',
+          border: '1px solid var(--hair)',
+          borderRadius: 10,
+          padding: 28,
+          width: 420,
+          boxShadow: '0 8px 40px rgba(0,0,0,0.3)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>Новый портфель</div>
+
+        {err && (
+          <div style={{ background: 'var(--crit-soft)', color: 'var(--crit)', borderRadius: 6, padding: '8px 12px', fontSize: 12, marginBottom: 14 }}>
+            {err}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 4 }}>Название *</div>
+            <input
+              className="input"
+              placeholder="Мой портфель"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={{ width: '100%' }}
+              autoFocus
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 4 }}>Описание</div>
+            <input
+              className="input"
+              placeholder="Необязательно"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 4 }}>Валюта</div>
+            <select
+              className="input"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+              style={{ width: '100%' }}
+            >
+              <option value="USD">USD</option>
+              <option value="RUB">RUB</option>
+              <option value="EUR">EUR</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 10, marginTop: 24, justifyContent: 'flex-end' }}>
+          <button className="btn-secondary" onClick={onClose} disabled={saving}>Отмена</button>
+          <button className="btn-primary" onClick={handleCreate} disabled={saving || !name.trim()}>
+            {saving ? 'Создаём…' : 'Создать'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function PortfolioPage() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
@@ -35,6 +248,15 @@ export default function PortfolioPage() {
   const [newWeight, setNewWeight] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  // Create portfolio modal
+  const [showCreateModal, setShowCreateModal] = useState(false);
+
+  const refreshPortfolios = useCallback(async () => {
+    const ps = await portfolioApi.list();
+    setPortfolios(ps);
+    return ps;
+  }, []);
 
   useEffect(() => {
     portfolioApi.list()
@@ -170,10 +392,29 @@ export default function PortfolioPage() {
           title="Портфель"
           sub={selectedPortfolio ? `${selectedPortfolio.name} · ${selectedPortfolio.currency}` : ''}
         >
+          <button
+            className="btn-secondary"
+            onClick={() => setShowCreateModal(true)}
+            style={{ marginRight: 8 }}
+          >
+            + Новый портфель
+          </button>
           <button className="btn-secondary" onClick={() => selectedId && loadData(selectedId)} disabled={dataLoading}>
             {dataLoading ? 'Загрузка…' : 'Обновить'}
           </button>
         </PageHead>
+
+        {showCreateModal && (
+          <CreatePortfolioModal
+            onClose={() => setShowCreateModal(false)}
+            onCreate={async (p) => {
+              setShowCreateModal(false);
+              const ps = await refreshPortfolios();
+              setSelectedId(p.id);
+              if (ps.length > 0) await loadData(p.id);
+            }}
+          />
+        )}
 
         {error && <ErrorBanner message={error} />}
         {saveMsg && (
@@ -215,7 +456,10 @@ export default function PortfolioPage() {
                 { label: 'Сумма весов', value: positions.length > 0 ? `${(totalWeight * 100).toFixed(1)}%` : null, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)' },
               ].map((kpi) => (
                 <div key={kpi.label} className="metric-card">
-                  <div className="metric-label">{kpi.label}</div>
+                  <div className="metric-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span>{kpi.label}</span>
+                    <MetricTooltip label={kpi.label} />
+                  </div>
                   {dataLoading ? <Skeleton height={28} width="60%" /> : (
                     <div className="metric-value" style={{ color: kpi.value ? kpi.color : 'var(--ink-4)', fontSize: kpi.value ? undefined : 16 }}>
                       {kpi.value ?? '—'}

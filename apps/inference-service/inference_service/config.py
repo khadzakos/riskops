@@ -17,10 +17,9 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "http://mlflow:3000"
     mlflow_s3_endpoint_url: str = "http://minio:9000"
 
-    # MinIO / S3
+    # MinIO / S3 (credentials used by MLflow SDK to access mlflow-artifacts bucket)
     aws_access_key_id: str = "riskops"
     aws_secret_access_key: str = "riskops123"
-    s3_bucket_models: str = "riskops-models"
 
     # Kafka
     kafka_brokers: str = "kafka:9092"

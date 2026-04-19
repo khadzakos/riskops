@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
+from ..backtesting import build_report, log_backtest_to_mlflow, run_rolling_backtest
 from ..config import get_settings
 from ..db import get_engine
 from ..metrics.risk_metrics import RiskMetrics, compute_all as compute_risk_metrics
@@ -217,6 +218,8 @@ def _train_garch_pipeline(
         os.unlink(tmp_plot)
 
         # Log risk report JSON (extended with additional metrics)
+        # Out-of-sample backtest metrics are added after training by the
+        # auto-backtest block below and logged to the same MLflow run.
         report = {
             "model_type": "garch",
             "symbols": req.symbols,
@@ -231,7 +234,6 @@ def _train_garch_pipeline(
             "beta_to_benchmark": extra_metrics.beta_to_benchmark,
             "aic": result.aic,
             "bic": result.bic,
-            "backtest_coverage_ratio": result.backtest_coverage_ratio,
             "trained_at": datetime.now(timezone.utc).isoformat(),
         }
         with tempfile.NamedTemporaryFile(
@@ -251,6 +253,46 @@ def _train_garch_pipeline(
 
         # Register model version in MLflow Model Registry
         model_version_str = _register_mlflow_model(run_id, model_name)
+
+    # --- Out-of-sample backtest (appended to the same MLflow run) ---
+    # Requires at least lookback_days + min_test_days observations.
+    # If data is insufficient, skip silently — training result is still valid.
+    _MIN_BACKTEST_TEST_DAYS = 30
+    _BACKTEST_LOOKBACK = min(req.lookback_days, len(port_rets) - _MIN_BACKTEST_TEST_DAYS)
+    if len(port_rets) >= _BACKTEST_LOOKBACK + _MIN_BACKTEST_TEST_DAYS and _BACKTEST_LOOKBACK >= 30:
+        try:
+            bt_result = run_rolling_backtest(
+                returns=port_rets,
+                model_type="garch",
+                alpha=req.alpha,
+                lookback_days=_BACKTEST_LOOKBACK,
+                test_days=_MIN_BACKTEST_TEST_DAYS,
+                horizon_days=req.horizon_days,
+            )
+            bt_report = build_report(bt_result, symbols=req.symbols, mlflow_run_id=run_id)
+            log_backtest_to_mlflow(
+                report=bt_report,
+                result=bt_result,
+                symbol=",".join(req.symbols),
+                run_id=run_id,
+            )
+            # Merge backtest status into all_metrics for Postgres storage
+            all_metrics["backtest_status"] = bt_report.status
+            all_metrics["backtest_kupiec_pvalue"] = bt_report.kupiec_pvalue
+            all_metrics["backtest_cc_pvalue"] = bt_report.christoffersen_pvalue_cc
+            all_metrics["backtest_violation_rate"] = bt_report.violation_rate
+            logger.info(
+                "GARCH auto-backtest: status=%s  violations=%d/%d  kupiec_p=%.4f  cc_p=%.4f",
+                bt_report.status, bt_report.violations, bt_report.total_obs,
+                bt_report.kupiec_pvalue, bt_report.christoffersen_pvalue_cc,
+            )
+        except Exception as exc:
+            logger.warning("Auto-backtest failed (non-fatal): %s", exc)
+    else:
+        logger.info(
+            "Skipping auto-backtest: insufficient data (%d obs, need >=%d)",
+            len(port_rets), _BACKTEST_LOOKBACK + _MIN_BACKTEST_TEST_DAYS,
+        )
 
     # Register in Postgres model_registry (store all metrics including additional ones)
     _register_model_in_db(
@@ -375,6 +417,45 @@ def _train_montecarlo_pipeline(
         os.unlink(tmp_params)
 
         model_version_str = _register_mlflow_model(run_id, model_name)
+
+    # --- Out-of-sample backtest (appended to the same MLflow run) ---
+    # Use historical simulation for MC pipeline — it's fast and model-agnostic.
+    # A full MC rolling backtest can be triggered via POST /api/risk/backtest.
+    _MIN_BACKTEST_TEST_DAYS = 30
+    _BACKTEST_LOOKBACK = min(req.lookback_days, len(port_rets) - _MIN_BACKTEST_TEST_DAYS)
+    if len(port_rets) >= _BACKTEST_LOOKBACK + _MIN_BACKTEST_TEST_DAYS and _BACKTEST_LOOKBACK >= 30:
+        try:
+            bt_result = run_rolling_backtest(
+                returns=port_rets,
+                model_type="historical",   # fast baseline for auto-backtest
+                alpha=req.alpha,
+                lookback_days=_BACKTEST_LOOKBACK,
+                test_days=_MIN_BACKTEST_TEST_DAYS,
+                horizon_days=req.horizon_days,
+            )
+            bt_report = build_report(bt_result, symbols=req.symbols, mlflow_run_id=run_id)
+            log_backtest_to_mlflow(
+                report=bt_report,
+                result=bt_result,
+                symbol=",".join(req.symbols),
+                run_id=run_id,
+            )
+            all_metrics["backtest_status"] = bt_report.status
+            all_metrics["backtest_kupiec_pvalue"] = bt_report.kupiec_pvalue
+            all_metrics["backtest_cc_pvalue"] = bt_report.christoffersen_pvalue_cc
+            all_metrics["backtest_violation_rate"] = bt_report.violation_rate
+            logger.info(
+                "MC auto-backtest (historical): status=%s  violations=%d/%d  kupiec_p=%.4f",
+                bt_report.status, bt_report.violations, bt_report.total_obs,
+                bt_report.kupiec_pvalue,
+            )
+        except Exception as exc:
+            logger.warning("Auto-backtest failed (non-fatal): %s", exc)
+    else:
+        logger.info(
+            "Skipping auto-backtest: insufficient data (%d obs, need >=%d)",
+            len(port_rets), _BACKTEST_LOOKBACK + _MIN_BACKTEST_TEST_DAYS,
+        )
 
     _register_model_in_db(
         model_name=model_name,

@@ -217,6 +217,27 @@ export interface TrainResponse {
   }>;
 }
 
+export interface BacktestResponse {
+  violations: number;
+  total_obs: number;
+  violation_rate: number;
+  expected_rate: number;
+  kupiec_lr: number;
+  kupiec_pvalue: number;
+  christoffersen_lr_ind: number;
+  christoffersen_lr_cc: number;
+  christoffersen_pvalue_ind: number;
+  christoffersen_pvalue_cc: number;
+  pi_01: number;
+  pi_11: number;
+  status: 'OK' | 'WARN' | 'CRIT';
+  model_type: string;
+  alpha: number;
+  lookback_days: number;
+  test_days: number;
+  mlflow_run_id?: string | null;
+}
+
 export const trainingApi = {
   listModels: () => apiFetch<ModelsResponse>('/risk/models'),
   triggerTraining: (body: {
@@ -229,6 +250,16 @@ export const trainingApi = {
     n_simulations?: number;
   }) => apiFetch<TrainResponse>('/risk/train', { method: 'POST', body: JSON.stringify(body) }),
   getTrainingStatus: (jobId: string) => apiFetch<TrainResponse>(`/risk/train/status/${jobId}`),
+  runBacktest: (body: {
+    symbols: string[];
+    model_type?: 'garch' | 'montecarlo' | 'historical';
+    alpha?: number;
+    lookback_days?: number;
+    test_days?: number;
+    horizon_days?: number;
+    n_simulations?: number;
+    log_to_mlflow?: boolean;
+  }) => apiFetch<BacktestResponse>('/risk/backtest', { method: 'POST', body: JSON.stringify(body) }),
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

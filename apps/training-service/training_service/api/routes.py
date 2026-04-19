@@ -5,6 +5,7 @@ Endpoints:
   GET  /api/risk/train/status/{id}  — get training run status from Postgres training_jobs
   GET  /api/risk/train/run/{run_id} — get MLflow run details by run_id
   GET  /api/risk/models             — list registered models from model_registry
+  POST /api/risk/backtest           — run rolling window out-of-sample VaR backtest
 """
 from __future__ import annotations
 
@@ -20,9 +21,15 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from ..backtesting import (
+    BacktestReport,
+    build_report,
+    log_backtest_to_mlflow,
+    run_rolling_backtest,
+)
 from ..config import get_settings
 from ..db import get_engine
-from ..pipelines.train import TrainRequest, TrainResult, run_training
+from ..pipelines.train import TrainRequest, TrainResult, load_returns, build_portfolio_returns, run_training
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +199,80 @@ class RunStatusResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Backtest request / response schemas
+# ---------------------------------------------------------------------------
+
+class BacktestRequestBody(BaseModel):
+    symbols: list[str] = Field(
+        default=["AAPL", "MSFT"],
+        description="List of ticker symbols to backtest",
+        min_length=1,
+    )
+    model_type: str = Field(
+        default="garch",
+        description="Model type: garch | montecarlo | historical",
+        pattern="^(garch|montecarlo|historical)$",
+    )
+    alpha: float = Field(default=0.99, ge=0.9, le=0.9999, description="VaR confidence level")
+    lookback_days: int = Field(
+        default=252, ge=30, le=2520,
+        description="Rolling training window size (days)",
+    )
+    test_days: int = Field(
+        default=60, ge=10, le=504,
+        description="Number of out-of-sample days to evaluate",
+    )
+    horizon_days: int = Field(
+        default=1, ge=1, le=30,
+        description="VaR forecast horizon (days)",
+    )
+    n_simulations: int = Field(
+        default=1_000, ge=100, le=10_000,
+        description="Monte Carlo simulations per rolling step (only for montecarlo)",
+    )
+    weights: Optional[dict[str, float]] = Field(
+        default=None,
+        description="Portfolio weights per symbol. If None, equal weights are used.",
+    )
+    mlflow_run_id: Optional[str] = Field(
+        default=None,
+        description="Existing MLflow run_id to append backtest metrics to. "
+                    "If None, a standalone run is created in riskops-backtest experiment.",
+    )
+    log_to_mlflow: bool = Field(
+        default=True,
+        description="Whether to log backtest results to MLflow.",
+    )
+
+
+class BacktestResponse(BaseModel):
+    # Coverage
+    violations: int
+    total_obs: int
+    violation_rate: float
+    expected_rate: float
+    # Kupiec UC test
+    kupiec_lr: float
+    kupiec_pvalue: float
+    # Christoffersen CC test
+    christoffersen_lr_ind: float
+    christoffersen_lr_cc: float
+    christoffersen_pvalue_ind: float
+    christoffersen_pvalue_cc: float
+    # Transition probabilities
+    pi_01: float
+    pi_11: float
+    # Decision
+    status: str   # OK | WARN | CRIT
+    # Metadata
+    model_type: str
+    alpha: float
+    lookback_days: int
+    test_days: int
+    mlflow_run_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # Background training worker
 # ---------------------------------------------------------------------------
 
@@ -332,6 +413,108 @@ async def list_models() -> ModelsResponse:
     ]
 
     return ModelsResponse(models=models, total=len(models))
+
+
+@router.post("/backtest", response_model=BacktestResponse)
+async def run_backtest(body: BacktestRequestBody) -> BacktestResponse:
+    """Run a rolling window out-of-sample VaR backtest.
+
+    Loads historical returns from Postgres, builds a portfolio return series,
+    then evaluates VaR predictions day-by-day on an out-of-sample window.
+    Applies Kupiec (unconditional coverage) and Christoffersen (conditional
+    coverage) statistical tests to assess model calibration.
+
+    This endpoint is **synchronous** — it blocks until the backtest completes.
+    For large test_days or montecarlo model_type, expect 5–30 seconds.
+
+    Returns a BacktestResponse with violation counts, p-values, and a status
+    classification: OK / WARN / CRIT.
+    """
+    logger.info(
+        "Backtest request: model=%s  symbols=%s  alpha=%.4f  lookback=%d  test=%d",
+        body.model_type, body.symbols, body.alpha, body.lookback_days, body.test_days,
+    )
+
+    # --- Load data ---
+    try:
+        returns_df = load_returns(body.symbols, lookback_days=body.lookback_days + body.test_days)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    port_rets = build_portfolio_returns(returns_df, weights=body.weights)
+
+    total_needed = body.lookback_days + body.test_days
+    if len(port_rets) < total_needed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Insufficient data: need {total_needed} observations "
+                f"(lookback={body.lookback_days} + test={body.test_days}), "
+                f"got {len(port_rets)}. Ingest more market data first."
+            ),
+        )
+
+    # --- Run rolling backtest ---
+    try:
+        result = run_rolling_backtest(
+            returns=port_rets,
+            model_type=body.model_type,  # type: ignore[arg-type]
+            alpha=body.alpha,
+            lookback_days=body.lookback_days,
+            test_days=body.test_days,
+            horizon_days=body.horizon_days,
+            n_simulations=body.n_simulations,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Backtest failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {exc}") from exc
+
+    # --- Build report ---
+    report = build_report(result, symbols=body.symbols, mlflow_run_id=body.mlflow_run_id)
+
+    # --- Optionally log to MLflow ---
+    used_run_id: Optional[str] = None
+    if body.log_to_mlflow:
+        cfg = get_settings()
+        import mlflow as _mlflow
+        _mlflow.set_tracking_uri(cfg.mlflow_tracking_uri)
+        try:
+            used_run_id = log_backtest_to_mlflow(
+                report=report,
+                result=result,
+                symbol=",".join(body.symbols),
+                run_id=body.mlflow_run_id,
+            )
+        except Exception as exc:
+            # MLflow logging failure must not break the API response
+            logger.warning("MLflow logging failed (non-fatal): %s", exc)
+
+    # --- Build response ---
+    kupiec = result.kupiec
+    cc = result.christoffersen
+
+    return BacktestResponse(
+        violations=result.violations,
+        total_obs=result.total_obs,
+        violation_rate=result.violation_rate,
+        expected_rate=result.expected_rate,
+        kupiec_lr=kupiec.lr_statistic if kupiec else float("nan"),
+        kupiec_pvalue=kupiec.p_value if kupiec else float("nan"),
+        christoffersen_lr_ind=cc.lr_ind if cc else float("nan"),
+        christoffersen_lr_cc=cc.lr_cc if cc else float("nan"),
+        christoffersen_pvalue_ind=cc.p_value_ind if cc else float("nan"),
+        christoffersen_pvalue_cc=cc.p_value_cc if cc else float("nan"),
+        pi_01=cc.pi_01 if cc else float("nan"),
+        pi_11=cc.pi_11 if cc else float("nan"),
+        status=result.status,
+        model_type=result.model_type,
+        alpha=result.alpha,
+        lookback_days=result.lookback_days,
+        test_days=result.test_days,
+        mlflow_run_id=used_run_id,
+    )
 
 
 # ---------------------------------------------------------------------------

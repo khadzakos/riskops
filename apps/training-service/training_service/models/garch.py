@@ -167,9 +167,6 @@ class GARCHResult:
     params: dict = field(default_factory=dict)
     metrics: dict = field(default_factory=dict)
 
-    # Backtest
-    backtest_coverage_ratio: Optional[float] = None
-
     def to_mlflow_params(self) -> dict:
         return self.params
 
@@ -235,10 +232,6 @@ def train_garch(
         alpha=alpha,
     )
 
-    # Backtest: fraction of historical returns worse than -VaR
-    exceedances = np.sum(returns < -var)
-    coverage_ratio = float(exceedances / len(returns))
-
     params = {
         "model_type": "garch",
         "p": garch_params.p,
@@ -256,8 +249,9 @@ def train_garch(
         "aic": float(res.aic),
         "bic": float(res.bic),
         "log_likelihood": float(res.loglikelihood),
-        "backtest_coverage_ratio": coverage_ratio,
-        "expected_coverage_ratio": 1.0 - alpha,
+        # Out-of-sample backtest metrics are added by the backtesting engine
+        # (training_service/backtesting/) after training completes.
+        # Use POST /api/risk/backtest for on-demand evaluation.
     }
 
     return GARCHResult(
@@ -270,7 +264,6 @@ def train_garch(
         log_likelihood=float(res.loglikelihood),
         params=params,
         metrics=metrics,
-        backtest_coverage_ratio=coverage_ratio,
     )
 
 
