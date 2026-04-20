@@ -341,9 +341,9 @@ export default function PortfolioPage() {
   const selectedPortfolio = portfolios.find((p) => p.id === selectedId) ?? null;
   const historyByMetric = groupByMetric(riskHistory);
 
-  const varVal = extractMetric(latestRisk, 'var');
-  const cvarVal = extractMetric(latestRisk, 'cvar');
-  const volVal = extractMetric(latestRisk, 'volatility');
+  const varVal = predictResult?.var ?? extractMetric(latestRisk, 'var');
+  const cvarVal = predictResult?.cvar ?? extractMetric(latestRisk, 'cvar');
+  const volVal = predictResult?.volatility ?? extractMetric(latestRisk, 'volatility');
 
   const mddVal = predictResult?.max_drawdown ?? null;
   const sharpeVal = predictResult?.sharpe_ratio ?? null;
