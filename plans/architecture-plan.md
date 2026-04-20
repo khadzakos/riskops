@@ -378,9 +378,8 @@ return float("inf")  # невалидный JSON, MLflow logging упадёт
 `model_registry` (Postgres) и MLflow Model Registry — два независимых источника истины. При ручном удалении версии в MLflow Postgres не обновится.
 **Fix:** убрать `model_registry` таблицу, читать напрямую из MLflow через `MlflowClient`.
 
-**BUG-7: Beta всегда `None` в production**
-`apps/training-service/training_service/pipelines/train.py` — `benchmark_returns=None` нигде не передаётся в `compute_all()`. Beta всегда `None` в MLflow и API.
-**Fix:** загружать benchmark (SPY или IMOEX) из `processed_returns` и передавать в `compute_all()`.
+**~~BUG-7: Beta всегда `None` в production~~** ✅ FIXED
+`apps/training-service/training_service/pipelines/train.py` — добавлена функция `load_benchmark_returns()`, которая пробует загрузить SPY → IMOEX.ME → IMOEX из `processed_returns`. Benchmark передаётся в `compute_all()` через оба pipeline (`_train_garch_pipeline`, `_train_montecarlo_pipeline`). Если benchmark недоступен — Beta остаётся `None` (non-fatal).
 
 **BUG-8: Race condition при shutdown Training Service**
 `apps/training-service/training_service/api/routes.py:332` — двойная обёртка: FastAPI `BackgroundTasks` + `ThreadPoolExecutor`. При shutdown FastAPI может убить задачу до завершения, оставив job в статусе `running`.
@@ -454,7 +453,7 @@ JWT или API-key middleware в `apps/gateway/internal/handler/`. Сейчас 
 | End-to-end pipeline: market data → training → inference → UI | ✅ |
 | Statistically correct backtest (Kupiec + Christoffersen) | ✅ |
 | ≥3 stress test scenarios | ✅ (5 сценариев) |
-| 7 risk metrics: VaR, CVaR, vol, MDD, Sharpe, Sortino, Beta | ⚠️ Beta всегда None |
+| 7 risk metrics: VaR, CVaR, vol, MDD, Sharpe, Sortino, Beta | ✅ Beta вычисляется (SPY/IMOEX benchmark) |
 | Model drift monitoring in Grafana | ⚠️ Grafana есть, VaR violations dashboard — нет |
 | Automated retraining trigger on CRIT alert | ❌ Phase 8 не начата |
 | Model versioning with rollback in MLflow | ✅ |

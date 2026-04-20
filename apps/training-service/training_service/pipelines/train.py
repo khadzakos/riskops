@@ -74,6 +74,66 @@ def load_returns(
     return df
 
 
+# Preferred benchmark symbols in priority order.
+# SPY covers US equities; IMOEX.ME covers Russian equities (MOEX).
+_BENCHMARK_CANDIDATES = ["SPY", "IMOEX.ME", "IMOEX"]
+
+
+def load_benchmark_returns(
+    lookback_days: int = 252,
+    n_obs: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """Load benchmark returns from processed_returns.
+
+    Tries each symbol in ``_BENCHMARK_CANDIDATES`` in order and returns the
+    first one that has data.  The returned array is aligned to the last
+    *n_obs* observations (or *lookback_days* if *n_obs* is None) so it can be
+    directly compared with a portfolio return series of the same length.
+
+    Returns ``None`` if no benchmark data is available — callers must handle
+    this gracefully (Beta will be ``None``).
+    """
+    target_len = n_obs if n_obs is not None else lookback_days
+    engine = get_engine()
+
+    for symbol in _BENCHMARK_CANDIDATES:
+        try:
+            with engine.connect() as conn:
+                df = pd.read_sql(
+                    text(
+                        """
+                        SELECT price_date, ret
+                        FROM processed_returns
+                        WHERE symbol = :symbol
+                        ORDER BY price_date ASC
+                        """
+                    ),
+                    conn,
+                    params={"symbol": symbol},
+                )
+            if df.empty:
+                continue
+
+            df["ret"] = df["ret"].astype(float)
+            arr = df["ret"].values[-target_len:]
+            if len(arr) < 2:
+                continue
+
+            logger.info(
+                "Loaded benchmark '%s': %d observations (requested %d)",
+                symbol, len(arr), target_len,
+            )
+            return arr.astype(float)
+        except Exception as exc:
+            logger.warning("Could not load benchmark '%s': %s", symbol, exc)
+
+    logger.warning(
+        "No benchmark data found for candidates %s — Beta will be None",
+        _BENCHMARK_CANDIDATES,
+    )
+    return None
+
+
 def build_portfolio_returns(
     returns_df: pd.DataFrame,
     weights: Optional[dict[str, float]] = None,
@@ -178,6 +238,7 @@ def _train_garch_pipeline(
     port_rets: np.ndarray,
     req: TrainRequest,
     experiment_name: str,
+    benchmark_returns: Optional[np.ndarray] = None,
 ) -> TrainResult:
     """Train GARCH(1,1), log to MLflow, register model."""
     _setup_mlflow()
@@ -197,12 +258,20 @@ def _train_garch_pipeline(
     with mlflow.start_run(run_name=run_name) as run:
         run_id = run.info.run_id
 
+        # Align benchmark to portfolio length before computing Beta
+        bench = None
+        if benchmark_returns is not None and len(benchmark_returns) >= len(port_rets):
+            bench = benchmark_returns[-len(port_rets):]
+        elif benchmark_returns is not None and len(benchmark_returns) >= 2:
+            bench = benchmark_returns
+
         # Compute additional risk metrics (Max Drawdown, Sharpe, Sortino, Beta)
         extra_metrics = compute_risk_metrics(
             returns=port_rets,
             var=result.var,
             cvar=result.cvar,
             volatility=result.volatility,
+            benchmark_returns=bench,
         )
 
         # Log params and metrics (core + additional)
@@ -332,6 +401,7 @@ def _train_montecarlo_pipeline(
     port_rets: np.ndarray,
     req: TrainRequest,
     experiment_name: str,
+    benchmark_returns: Optional[np.ndarray] = None,
 ) -> TrainResult:
     """Run Monte Carlo simulation, log to MLflow, register model."""
     _setup_mlflow()
@@ -351,12 +421,20 @@ def _train_montecarlo_pipeline(
     with mlflow.start_run(run_name=run_name) as run:
         run_id = run.info.run_id
 
+        # Align benchmark to portfolio length before computing Beta
+        bench = None
+        if benchmark_returns is not None and len(benchmark_returns) >= len(port_rets):
+            bench = benchmark_returns[-len(port_rets):]
+        elif benchmark_returns is not None and len(benchmark_returns) >= 2:
+            bench = benchmark_returns
+
         # Compute additional risk metrics (Max Drawdown, Sharpe, Sortino, Beta)
         extra_metrics = compute_risk_metrics(
             returns=port_rets,
             var=result.var,
             cvar=result.cvar,
             volatility=result.volatility,
+            benchmark_returns=bench,
         )
 
         mlflow.log_params({**result.to_mlflow_params(), "symbols": ",".join(req.symbols)})
@@ -598,6 +676,12 @@ def run_training(req: TrainRequest) -> list[TrainResult]:
     returns_df = load_returns(req.symbols, lookback_days=req.lookback_days)
     port_rets = build_portfolio_returns(returns_df, weights=req.weights)
 
+    # Load benchmark returns for Beta calculation (non-fatal if unavailable)
+    benchmark_rets = load_benchmark_returns(
+        lookback_days=req.lookback_days,
+        n_obs=len(port_rets),
+    )
+
     results: list[TrainResult] = []
     model_types = (
         ["garch", "montecarlo"] if req.model_type == "all" else [req.model_type]
@@ -607,9 +691,9 @@ def run_training(req: TrainRequest) -> list[TrainResult]:
         experiment_name = f"riskops-{mt}"
         try:
             if mt == "garch":
-                r = _train_garch_pipeline(port_rets, req, experiment_name)
+                r = _train_garch_pipeline(port_rets, req, experiment_name, benchmark_returns=benchmark_rets)
             elif mt == "montecarlo":
-                r = _train_montecarlo_pipeline(port_rets, req, experiment_name)
+                r = _train_montecarlo_pipeline(port_rets, req, experiment_name, benchmark_returns=benchmark_rets)
             else:
                 logger.warning("Unknown model type: %s — skipping", mt)
                 continue
