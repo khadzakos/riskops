@@ -69,20 +69,19 @@ jobs:
             git fetch origin main
             git checkout main
             git pull --ff-only origin main
-            if [[ -z "${SERVICES}" ]]; then
+            if [ -z "${SERVICES}" ]; then
               echo "No mapped compose services; git sync done, skipping docker-compose --build."
               exit 0
             fi
-            if [[ "${SERVICES}" == "ALL_APPS" ]]; then
-              docker-compose --profile apps --profile airflow --profile observability up -d --build
+            if [ "${SERVICES}" = "ALL_APPS" ]; then
+              docker compose --profile apps --profile airflow --profile observability up -d --build
               exit 0
             fi
-            PROFILES=(--profile apps)
+            PROFILES="--profile apps"
             case "${SERVICES}" in
-              *prometheus*|*grafana*) PROFILES+=(--profile observability) ;;
+              *prometheus*|*grafana*) PROFILES="${PROFILES} --profile observability" ;;
             esac
             case "${SERVICES}" in
-              *airflow*) PROFILES+=(--profile airflow) ;;
+              *airflow*) PROFILES="${PROFILES} --profile airflow" ;;
             esac
-            read -ra SVC_ARRAY <<< "${SERVICES}"
-            docker-compose "${PROFILES[@]}" up -d --build "${SVC_ARRAY[@]}"
+            docker compose ${PROFILES} up -d --build ${SERVICES}
