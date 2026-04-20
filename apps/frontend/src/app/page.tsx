@@ -63,6 +63,8 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [predicting, setPredicting] = useState(false);
   const [predictMsg, setPredictMsg] = useState<string | null>(null);
+  // Live predict result — used directly for KPI cards so values show on first load
+  const [predictResult, setPredictResult] = useState<{ var: number; cvar: number; volatility: number } | null>(null);
 
   // Load portfolios + model health on mount
   useEffect(() => {
@@ -88,6 +90,15 @@ export default function DashboardPage() {
       setPositions(pos);
       setLatestRisk(latest);
       setRiskHistory(history);
+
+      // Auto-compute fresh risk metrics so KPI cards always show values
+      try {
+        const pred = await inferenceApi.predict({ portfolio_id: id });
+        setPredictResult({ var: pred.var, cvar: pred.cvar, volatility: pred.volatility });
+      } catch {
+        // inference unavailable — KPI cards will fall back to DB snapshot
+        setPredictResult(null);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки данных портфеля');
     } finally {
@@ -96,7 +107,10 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (selectedId !== null) loadPortfolioData(selectedId);
+    if (selectedId !== null) {
+      setPredictResult(null); // clear stale values while new data loads
+      loadPortfolioData(selectedId);
+    }
   }, [selectedId, loadPortfolioData]);
 
   // Trigger risk recalculation
@@ -106,8 +120,15 @@ export default function DashboardPage() {
     setPredictMsg(null);
     try {
       const res = await inferenceApi.predict({ portfolio_id: selectedId });
+      setPredictResult({ var: res.var, cvar: res.cvar, volatility: res.volatility });
       setPredictMsg(`VaR: ${(res.var * 100).toFixed(2)}% | CVaR: ${(res.cvar * 100).toFixed(2)}% | σ: ${(res.volatility * 100).toFixed(2)}%`);
-      await loadPortfolioData(selectedId);
+      // Refresh DB snapshot (history chart, table)
+      const [latest, history] = await Promise.all([
+        portfolioApi.getLatestRisk(selectedId),
+        portfolioApi.getRiskHistory(selectedId, 90),
+      ]);
+      setLatestRisk(latest);
+      setRiskHistory(history);
     } catch (e: unknown) {
       setPredictMsg(e instanceof Error ? `Ошибка: ${e.message}` : 'Ошибка расчёта');
     } finally {
@@ -120,9 +141,10 @@ export default function DashboardPage() {
   const selectedPortfolio = portfolios.find((p) => p.id === selectedId) ?? null;
   const byMetric = groupByMetric(latestRisk);
 
-  const varVal = extractMetric(latestRisk, 'var');
-  const cvarVal = extractMetric(latestRisk, 'cvar');
-  const volVal = extractMetric(latestRisk, 'volatility');
+  // Prefer live predict response; fall back to DB snapshot
+  const varVal = predictResult?.var ?? extractMetric(latestRisk, 'var');
+  const cvarVal = predictResult?.cvar ?? extractMetric(latestRisk, 'cvar');
+  const volVal = predictResult?.volatility ?? extractMetric(latestRisk, 'volatility');
 
   // Build sparkline values from history for each metric
   const varHistory = (byMetric['var'] ?? [])
