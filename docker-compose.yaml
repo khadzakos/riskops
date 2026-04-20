@@ -1,7 +1,7 @@
 services:
   # ── Infrastructure (always needed) ───────────────────────────
   db:
-    profiles: [all, infra, apps, airflow, observability, mlflow]
+    profiles: [all, infra]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: riskops
@@ -46,7 +46,7 @@ services:
       retries: 15
 
   minio:
-    profiles: [all, infra, apps, mlflow]
+    profiles: [all, infra, mlflow]
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
@@ -64,7 +64,7 @@ services:
       retries: 10
 
   minio-init:
-    profiles: [all, infra, apps, mlflow]
+    profiles: [all, infra, mlflow]
     image: minio/mc:latest
     depends_on:
       minio:
@@ -78,7 +78,7 @@ services:
 
   # ── MLflow ───────────────────────────────────────────────────
   mlflow:
-    profiles: [all, mlflow, apps]
+    profiles: [all, mlflow, infra]
     image: ghcr.io/mlflow/mlflow:latest
     command: >
       sh -c "python -m pip install --no-cache-dir -q psycopg2-binary boto3 && mlflow server
@@ -102,7 +102,7 @@ services:
 
   # ── Airflow ───────────────────────────────────────────────────
   airflow-init:
-    profiles: [all, airflow]
+    profiles: [all, airflow, infra]
     build:
       context: .
       dockerfile: infra/airflow/Dockerfile
@@ -142,7 +142,7 @@ services:
       "
 
   airflow-webserver:
-    profiles: [all, airflow]
+    profiles: [all, airflow, infra]
     build:
       context: .
       dockerfile: infra/airflow/Dockerfile
@@ -163,7 +163,7 @@ services:
       retries: 15
 
   airflow-scheduler:
-    profiles: [all, airflow]
+    profiles: [all, airflow, infra]
     build:
       context: .
       dockerfile: infra/airflow/Dockerfile
@@ -195,6 +195,8 @@ services:
     depends_on:
       - portfolio-service
       - market-data-service
+      - inference-service
+      - training-service
 
   portfolio-service:
     profiles: [all, apps]
@@ -323,7 +325,7 @@ services:
       retries: 10
 
   caddy:
-    profiles: [all, apps]
+    profiles: [all, infra]
     image: caddy:2-alpine
     ports:
       - "80:80"

@@ -68,7 +68,10 @@ export default function DashboardPage() {
 
   // Load portfolios + model health on mount
   useEffect(() => {
-    Promise.all([portfolioApi.list(), inferenceApi.health()])
+    Promise.all([
+      portfolioApi.list(),
+      inferenceApi.health().catch(() => null), // non-fatal: inference may be starting up
+    ])
       .then(([ps, h]) => {
         setPortfolios(ps);
         setHealth(h);
