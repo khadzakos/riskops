@@ -56,18 +56,15 @@ jobs:
       # Всегда подтягиваем main на ВМ; docker-compose --build только если маппинг вернул сервисы.
       - name: Sync repo on VM (redeploy services only if mapped)
         uses: appleboy/ssh-action@v1.2.0
-        env:
-          SERVICES: ${{ needs.compute-services.outputs.services }}
-          DEPLOY_PATH: ${{ secrets.VM_DEPLOY_PATH }}
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
-          envs: SERVICES,DEPLOY_PATH
           script_stop: true
           script: |
             set -euo pipefail
-            SERVICES="${SERVICES:-}"
+            SERVICES='${{ needs.compute-services.outputs.services }}'
+            DEPLOY_PATH='${{ secrets.VM_DEPLOY_PATH }}'
             cd "${DEPLOY_PATH}"
             git fetch origin main
             git checkout main
@@ -87,4 +84,5 @@ jobs:
             case "${SERVICES}" in
               *airflow*) PROFILES+=(--profile airflow) ;;
             esac
-            docker-compose "${PROFILES[@]}" up -d --build ${SERVICES}
+            read -ra SVC_ARRAY <<< "${SERVICES}"
+            docker-compose "${PROFILES[@]}" up -d --build "${SVC_ARRAY[@]}"
