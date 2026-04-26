@@ -48,3 +48,6 @@ __pycache__/
 .next/
 node_modules/
 riskops-ui-templates/
+
+# MacOS
+.DS_Store
