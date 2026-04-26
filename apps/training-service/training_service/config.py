@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     default_horizon_days: int = 1
     monte_carlo_simulations: int = 10_000
 
+    # Downstream service URLs
+    market_data_service_url: str = "http://market-data-service:8083"
+
     model_config = {"env_file": ".env", "case_sensitive": False}
 
 

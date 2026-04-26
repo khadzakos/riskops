@@ -2,19 +2,22 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Topbar, PageHead, Pill, ErrorBanner, Skeleton } from '@/components/Shell';
-import { LineChart, Donut, type LineSeries } from '@/components/Charts';
+import { LineChart, Donut, Heatmap, type LineSeries } from '@/components/Charts';
 import {
   portfolioApi,
   inferenceApi,
+  marketDataApi,
   extractMetric,
   groupByMetric,
   type Portfolio,
   type Position,
   type RiskResult,
   type PredictResponse,
+  type CorrelationMatrixResponse,
+  type PriceChartResponse,
 } from '@/lib/api';
 
-const COLORS = ['var(--primary)', 'var(--accent)', '#6b8f71', '#c9a96e', '#8b6f47', '#4a6b3e'];
+const COLORS = ['var(--primary)', 'var(--accent)', '#6b8f71', '#c9a96e', '#8b6f47', '#4a6b3e', '#7b5ea7', '#c96e6e'];
 
 // ── Metric Tooltip ────────────────────────────────────────────────────────────
 
@@ -109,8 +112,6 @@ function MetricTooltip({ label }: { label: string }) {
           zIndex: 9999,
           fontSize: 11,
           lineHeight: 1.55,
-          opacity: 1,
-          // Position below the ? button using JS-free approach via transform
           top: (() => {
             if (typeof window === 'undefined') return 0;
             const el = ref.current;
@@ -239,6 +240,251 @@ function CreatePortfolioModal({ onClose, onCreate }: CreatePortfolioModalProps) 
   );
 }
 
+// ── Correlation Matrix Component ──────────────────────────────────────────────
+
+function CorrelationMatrixCard({
+  portfolioId,
+  positions,
+}: {
+  portfolioId: number;
+  positions: Position[];
+}) {
+  const [data, setData] = useState<CorrelationMatrixResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lookback, setLookback] = useState(252);
+
+  const load = useCallback(async () => {
+    if (positions.length < 2) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await inferenceApi.getCorrelationMatrix(portfolioId, lookback);
+      setData(result);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Ошибка загрузки матрицы корреляций');
+    } finally {
+      setLoading(false);
+    }
+  }, [portfolioId, positions.length, lookback]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (positions.length < 2) {
+    return (
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">Матрица корреляций</div>
+        </div>
+        <div className="empty-state">Добавьте минимум 2 позиции для расчёта корреляций</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div className="card-title">Матрица корреляций</div>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <select
+            className="input"
+            value={lookback}
+            onChange={(e) => setLookback(Number(e.target.value))}
+            style={{ fontSize: 11, padding: '3px 6px', height: 26 }}
+          >
+            <option value={63}>3 мес</option>
+            <option value={126}>6 мес</option>
+            <option value={252}>1 год</option>
+            <option value={504}>2 года</option>
+          </select>
+          <button className="btn-secondary" onClick={load} disabled={loading} style={{ fontSize: 11, padding: '3px 10px', height: 26 }}>
+            {loading ? '…' : 'Обновить'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ color: 'var(--crit)', fontSize: 12, padding: '8px 0' }}>{error}</div>
+      )}
+
+      {loading ? (
+        <Skeleton height={200} />
+      ) : data && data.symbols.length >= 2 ? (
+        <div style={{ overflowX: 'auto' }}>
+          <Heatmap labels={data.symbols} matrix={data.matrix} />
+          <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 6, textAlign: 'right' }}>
+            Pearson · {data.lookback_days} торговых дней · {data.computed_at.slice(0, 10)}
+          </div>
+        </div>
+      ) : (
+        <div className="empty-state">Недостаточно данных для расчёта корреляций</div>
+      )}
+    </div>
+  );
+}
+
+// ── Unified Price Chart Component ─────────────────────────────────────────────
+
+function UnifiedPriceChartCard({
+  positions,
+}: {
+  positions: Position[];
+}) {
+  const [data, setData] = useState<PriceChartResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [period, setPeriod] = useState<'3m' | '6m' | '1y' | '2y' | '5y'>('1y');
+  const [normalized, setNormalized] = useState(true);
+
+  const periodToDateFrom = (p: string): string => {
+    const now = new Date();
+    switch (p) {
+      case '3m': now.setMonth(now.getMonth() - 3); break;
+      case '6m': now.setMonth(now.getMonth() - 6); break;
+      case '1y': now.setFullYear(now.getFullYear() - 1); break;
+      case '2y': now.setFullYear(now.getFullYear() - 2); break;
+      case '5y': now.setFullYear(now.getFullYear() - 5); break;
+    }
+    return now.toISOString().slice(0, 10);
+  };
+
+  const load = useCallback(async () => {
+    if (positions.length === 0) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const symbols = positions.map((p) => p.symbol);
+      const result = await marketDataApi.getPriceChart({
+        symbols,
+        date_from: periodToDateFrom(period),
+        normalized,
+      });
+      setData(result);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Ошибка загрузки графика цен');
+    } finally {
+      setLoading(false);
+    }
+  }, [positions, period, normalized]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (positions.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-head">
+          <div className="card-title">Динамика цен</div>
+        </div>
+        <div className="empty-state">Добавьте позиции для отображения графика</div>
+      </div>
+    );
+  }
+
+  // Build LineSeries from price chart data
+  const chartSeries: LineSeries[] = [];
+  if (data?.series) {
+    data.series.forEach((s, i) => {
+      if (s.points.length > 0) {
+        chartSeries.push({
+          name: s.symbol,
+          color: COLORS[i % COLORS.length],
+          data: s.points.map((p) => ({ x: p.date, y: p.value })),
+        });
+      }
+    });
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div className="card-title">Динамика цен</div>
+        <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Period selector */}
+          {(['3m', '6m', '1y', '2y', '5y'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              style={{
+                fontSize: 11,
+                padding: '2px 8px',
+                height: 24,
+                background: period === p ? 'var(--primary)' : 'var(--bg-2)',
+                color: period === p ? '#fff' : 'var(--ink-2)',
+                border: `1px solid ${period === p ? 'var(--primary)' : 'var(--hair-strong)'}`,
+                borderRadius: 4,
+                cursor: 'pointer',
+              }}
+            >
+              {p}
+            </button>
+          ))}
+          {/* Normalized toggle */}
+          <button
+            onClick={() => setNormalized((v) => !v)}
+            style={{
+              fontSize: 11,
+              padding: '2px 8px',
+              height: 24,
+              background: normalized ? 'var(--accent)' : 'var(--bg-2)',
+              color: normalized ? '#fff' : 'var(--ink-2)',
+              border: `1px solid ${normalized ? 'var(--accent)' : 'var(--hair-strong)'}`,
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+            title={normalized ? 'Нормализовано (база 100)' : 'Абсолютные цены'}
+          >
+            {normalized ? 'База 100' : 'Цена'}
+          </button>
+          <button className="btn-secondary" onClick={load} disabled={loading} style={{ fontSize: 11, padding: '3px 10px', height: 26 }}>
+            {loading ? '…' : '↺'}
+          </button>
+        </div>
+      </div>
+
+      {/* Legend */}
+      {chartSeries.length > 0 && (
+        <div className="row" style={{ gap: 14, marginBottom: 8, flexWrap: 'wrap' }}>
+          {chartSeries.map((s) => (
+            <div key={s.name} className="row" style={{ gap: 5 }}>
+              <div style={{ width: 12, height: 2, background: s.color, marginTop: 6 }} />
+              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-2)' }}>{s.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div style={{ color: 'var(--crit)', fontSize: 12, padding: '8px 0' }}>{error}</div>
+      )}
+
+      {loading ? (
+        <Skeleton height={240} />
+      ) : chartSeries.length > 0 ? (
+        <LineChart
+          series={chartSeries}
+          height={240}
+          yFormat={(v) => normalized ? `${v.toFixed(1)}` : `${v.toFixed(2)}`}
+          xFormat={(v) => String(v).slice(5)}
+          xTicks={8}
+        />
+      ) : (
+        <div className="empty-state">Нет данных о ценах для выбранного периода</div>
+      )}
+
+      {data && (
+        <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 4, textAlign: 'right' }}>
+          {normalized ? 'Нормализовано к базе 100 на начало периода' : 'Абсолютные цены закрытия'}
+          {' · '}{data.date_from} — {data.date_to}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function PortfolioPage() {
@@ -355,11 +601,11 @@ export default function PortfolioPage() {
   const mddColor = mddVal === null ? 'var(--ink-4)' : mddVal > -0.1 ? 'var(--good)' : mddVal > -0.2 ? 'var(--warn)' : 'var(--crit)';
   const betaColor = betaVal === null ? 'var(--ink-4)' : betaVal >= 0.8 && betaVal <= 1.2 ? 'var(--accent)' : betaVal < 0.8 ? 'var(--good)' : 'var(--warn)';
 
-  const chartSeries: LineSeries[] = [];
+  const riskChartSeries: LineSeries[] = [];
   const varSorted = (historyByMetric['var'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
   const cvarSorted = (historyByMetric['cvar'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
-  if (varSorted.length > 0) chartSeries.push({ name: 'VaR', color: 'var(--primary)', data: varSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
-  if (cvarSorted.length > 0) chartSeries.push({ name: 'CVaR', color: 'var(--crit)', data: cvarSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
+  if (varSorted.length > 0) riskChartSeries.push({ name: 'VaR', color: 'var(--primary)', data: varSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
+  if (cvarSorted.length > 0) riskChartSeries.push({ name: 'CVaR', color: 'var(--crit)', data: cvarSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
 
   const donutData = positions.map((p, i) => ({
     label: p.symbol,
@@ -410,196 +656,250 @@ export default function PortfolioPage() {
         )}
 
         {error && <ErrorBanner message={error} />}
+
         {saveMsg && (
-          <div className="error-banner" style={{ background: 'var(--good-soft)', borderColor: 'var(--good)', color: 'var(--good)' }}>
-            ✓ {saveMsg}
+          <div style={{
+            background: saveMsg.startsWith('Ошибка') ? 'var(--crit-soft)' : 'var(--good-soft)',
+            color: saveMsg.startsWith('Ошибка') ? 'var(--crit)' : 'var(--good)',
+            borderRadius: 6,
+            padding: '8px 14px',
+            fontSize: 12,
+            marginBottom: 8,
+          }}>
+            {saveMsg}
           </div>
         )}
 
-        {/* Portfolio selector */}
-        {!loading && portfolios.length > 0 && (
-          <div className="row" style={{ gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {/* ── Portfolio selector ─────────────────────────────────────── */}
+        {loading ? (
+          <Skeleton height={40} />
+        ) : portfolios.length === 0 ? (
+          <div className="card" style={{ textAlign: 'center', padding: 32 }}>
+            <div style={{ fontSize: 14, color: 'var(--ink-3)', marginBottom: 12 }}>
+              Нет портфелей. Создайте первый портфель.
+            </div>
+            <button className="btn-primary" onClick={() => setShowCreateModal(true)}>
+              + Создать портфель
+            </button>
+          </div>
+        ) : (
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             {portfolios.map((p) => (
               <button
                 key={p.id}
-                className={selectedId === p.id ? 'btn-primary' : 'btn-secondary'}
-                style={{ fontSize: 12 }}
                 onClick={() => setSelectedId(p.id)}
-              >
-                {p.name}
-              </button>
-            ))}
-            {selectedId !== null && (
-              <button
-                className="btn-secondary"
-                style={{ fontSize: 12, color: 'var(--crit)', borderColor: 'var(--crit)', marginLeft: 'auto' }}
-                onClick={async () => {
-                  if (!selectedId) return;
-                  if (!confirm(`Удалить портфель «${portfolios.find((p) => p.id === selectedId)?.name}»? Это действие необратимо.`)) return;
-                  try {
-                    await portfolioApi.delete(selectedId);
-                    const ps = await refreshPortfolios();
-                    setSelectedId(ps.length > 0 ? ps[0].id : null);
-                    setPositions([]);
-                    setLatestRisk([]);
-                    setRiskHistory([]);
-                    setPredictResult(null);
-                  } catch (e: unknown) {
-                    setError(e instanceof Error ? e.message : 'Ошибка удаления портфеля');
-                  }
+                style={{
+                  padding: '6px 16px',
+                  borderRadius: 20,
+                  border: `1px solid ${selectedId === p.id ? 'var(--primary)' : 'var(--hair-strong)'}`,
+                  background: selectedId === p.id ? 'var(--primary)' : 'var(--bg-2)',
+                  color: selectedId === p.id ? '#fff' : 'var(--ink-2)',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  fontWeight: selectedId === p.id ? 600 : 400,
                 }}
               >
-              Удалить портфель
-            </button>
+                {p.name}
+                {p.currency && (
+                  <span style={{ marginLeft: 6, opacity: 0.7, fontSize: 11 }}>{p.currency}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* ── KPI strip ─────────────────────────────────────────────── */}
+        {selectedId !== null && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10, marginTop: 8 }}>
+            {kpis.map((k) => (
+              <div key={k.label} className="card" style={{ padding: '12px 14px' }}>
+                <div className="row" style={{ gap: 5, marginBottom: 4, alignItems: 'center' }}>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    {k.label}
+                  </div>
+                  <MetricTooltip label={k.label} />
+                </div>
+                {dataLoading ? (
+                  <Skeleton height={22} />
+                ) : (
+                  <div style={{ fontSize: 20, fontWeight: 700, color: k.color, fontVariantNumeric: 'tabular-nums' }}>
+                    {k.value ?? <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Positions table + Donut ────────────────────────────────── */}
+        {selectedId !== null && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'start', marginTop: 8 }}>
+            {/* Positions table */}
+            <div className="card" style={{ minWidth: 0 }}>
+              <div className="card-head">
+                <div className="card-title">Позиции</div>
+                <Pill>{positions.length} активов</Pill>
+              </div>
+
+              {/* Add position form */}
+              <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                <input
+                  className="input"
+                  placeholder="Тикер (AAPL)"
+                  value={newSymbol}
+                  onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
+                  style={{ width: 110 }}
+                />
+                <input
+                  className="input"
+                  placeholder="Вес (0.25)"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={newWeight}
+                  onChange={(e) => setNewWeight(e.target.value)}
+                  style={{ width: 100 }}
+                />
+                <button
+                  className="btn-primary"
+                  onClick={handleAddPosition}
+                  disabled={saving || !newSymbol || !newWeight}
+                  style={{ fontSize: 12 }}
+                >
+                  {saving ? '…' : '+ Добавить'}
+                </button>
+              </div>
+
+              {dataLoading ? (
+                <Skeleton height={120} />
+              ) : positions.length === 0 ? (
+                <div className="empty-state">Нет позиций. Добавьте активы выше.</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--hair)' }}>
+                      <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Тикер</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Вес</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Доля</th>
+                      <th style={{ width: 32 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((p, i) => (
+                      <tr key={p.symbol} style={{ borderBottom: '1px solid var(--hair)' }}>
+                        <td style={{ padding: '6px 8px' }}>
+                          <div className="row" style={{ gap: 8 }}>
+                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length], flexShrink: 0, marginTop: 3 }} />
+                            <span className="mono" style={{ fontWeight: 600 }}>{p.symbol}</span>
+                          </div>
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
+                          {p.weight.toFixed(4)}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums' }}>
+                          {(p.weight * 100).toFixed(1)}%
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '6px 4px' }}>
+                          <button
+                            onClick={() => handleDeletePosition(p.symbol)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--crit)', fontSize: 14, padding: '0 4px' }}
+                            title="Удалить позицию"
+                          >
+                            ×
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td style={{ padding: '6px 8px', fontSize: 11, color: 'var(--ink-3)' }}>Итого</td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                        {totalWeight.toFixed(4)}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)', fontVariantNumeric: 'tabular-nums' }}>
+                        {(totalWeight * 100).toFixed(1)}%
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+
+            {/* Donut chart */}
+            {positions.length > 0 && (
+              <div className="card" style={{ width: 200, flexShrink: 0 }}>
+                <div className="card-head">
+                  <div className="card-title">Аллокация</div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+                  <Donut data={donutData} size={160} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                  {donutData.map((d) => (
+                    <div key={d.label} className="row" style={{ gap: 6, fontSize: 11 }}>
+                      <div style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, flexShrink: 0, marginTop: 2 }} />
+                      <span className="mono">{d.label}</span>
+                      <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }}>{(d.value * 100).toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         )}
 
-        {loading ? (
-          <Skeleton height={200} />
-        ) : (
-          <>
-            {/* KPI strip */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 10, marginBottom: 20 }}>
-              {kpis.map((kpi) => (
-                <div key={kpi.label} className="metric-card">
-                  <div className="metric-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <span>{kpi.label}</span>
-                    <MetricTooltip label={kpi.label} />
-                  </div>
-                  {dataLoading ? <Skeleton height={24} width="60%" /> : (
-                    <div className="metric-value" style={{ color: kpi.value ? kpi.color : 'var(--ink-4)', fontSize: kpi.value ? 22 : 16 }}>
-                      {kpi.value ?? '—'}
-                    </div>
-                  )}
-                </div>
-              ))}
+        {/* ── Risk history chart ─────────────────────────────────────── */}
+        {selectedId !== null && (
+          <div className="card" style={{ marginTop: 8 }}>
+            <div className="card-head">
+              <div className="card-title">История риска</div>
+              {predictResult && (
+                <Pill variant="primary">
+                  Метод: {predictResult.method}
+                </Pill>
+              )}
             </div>
-
-            <div className="grid-2" style={{ gap: 20, marginBottom: 20 }}>
-              {/* Positions table */}
-              <div className="card">
-                <div className="card-head">
-                  <div className="card-title">Позиции</div>
-                  <Pill variant={positions.length > 0 ? 'good' : ''}>{positions.length} позиций</Pill>
-                </div>
-
-                {dataLoading ? <Skeleton height={140} /> : positions.length > 0 ? (
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Тикер</th>
-                        <th style={{ textAlign: 'right' }}>Вес</th>
-                        <th>Обновлено</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {positions.map((p, i) => (
-                        <tr key={p.symbol}>
-                          <td>
-                            <div className="row" style={{ gap: 6 }}>
-                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length], flexShrink: 0 }} />
-                              <span className="mono">{p.symbol}</span>
-                            </div>
-                          </td>
-                          <td style={{ textAlign: 'right' }} className="mono">{(p.weight * 100).toFixed(1)}%</td>
-                          <td style={{ fontSize: 11, color: 'var(--ink-4)' }}>{p.updated_at.slice(0, 10)}</td>
-                          <td>
-                            <button
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--crit)', fontSize: 12 }}
-                              onClick={() => handleDeletePosition(p.symbol)}
-                            >
-                              ✕
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="empty-state">Нет позиций</div>
-                )}
-
-                {/* Add position form */}
-                <div style={{ borderTop: '1px solid var(--hair)', paddingTop: 12, marginTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                    Добавить позицию
-                  </div>
-                  <div className="row" style={{ gap: 8 }}>
-                    <input
-                      className="input"
-                      placeholder="Тикер (AAPL)"
-                      value={newSymbol}
-                      onChange={(e) => setNewSymbol(e.target.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <input
-                      className="input"
-                      placeholder="Вес (0.25)"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max="1"
-                      value={newWeight}
-                      onChange={(e) => setNewWeight(e.target.value)}
-                      style={{ width: 100 }}
-                    />
-                    <button className="btn-primary" onClick={handleAddPosition} disabled={saving || !newSymbol || !newWeight}>
-                      {saving ? '…' : 'Добавить'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Donut */}
-              <div className="card">
-                <div className="card-head">
-                  <div className="card-title">Аллокация</div>
-                </div>
-                {dataLoading ? <Skeleton height={200} /> : donutData.length > 0 ? (
-                  <div className="row" style={{ gap: 20, alignItems: 'center', justifyContent: 'center', padding: '12px 0' }}>
-                    <Donut data={donutData} size={180} />
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {donutData.map((d) => (
-                        <div key={d.label} className="row" style={{ gap: 6 }}>
-                          <div style={{ width: 10, height: 10, borderRadius: '50%', background: d.color, flexShrink: 0 }} />
-                          <span className="mono" style={{ fontSize: 12 }}>{d.label}</span>
-                          <span style={{ fontSize: 11, color: 'var(--ink-4)' }}>{(d.value * 100).toFixed(1)}%</span>
-                        </div>
-                      ))}
+            {dataLoading ? (
+              <Skeleton height={180} />
+            ) : riskChartSeries.length > 0 ? (
+              <>
+                <div className="row" style={{ gap: 14, marginBottom: 8 }}>
+                  {riskChartSeries.map((s) => (
+                    <div key={s.name} className="row" style={{ gap: 5 }}>
+                      <div style={{ width: 12, height: 2, background: s.color, marginTop: 6 }} />
+                      <span style={{ fontSize: 11, color: 'var(--ink-2)' }}>{s.name}</span>
                     </div>
-                  </div>
-                ) : (
-                  <div className="empty-state">Нет данных</div>
-                )}
-              </div>
-            </div>
-
-            {/* Risk history chart */}
-            {chartSeries.length > 0 && (
-              <div className="card">
-                <div className="card-head">
-                  <div className="card-title">История риска (90 дней)</div>
-                  <div className="row" style={{ gap: 12 }}>
-                    {chartSeries.map((s) => (
-                      <div key={s.name} className="row" style={{ gap: 4 }}>
-                        <div style={{ width: 10, height: 2, background: s.color }} />
-                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{s.name}</span>
-                      </div>
-                    ))}
-                  </div>
+                  ))}
                 </div>
                 <LineChart
-                  series={chartSeries}
-                  height={200}
-                  yFormat={(v) => `${(v * 100).toFixed(1)}%`}
+                  series={riskChartSeries}
+                  height={180}
+                  yFormat={(v) => `${(v * 100).toFixed(2)}%`}
                   xFormat={(v) => String(v).slice(5)}
-                  fillArea
+                  xTicks={6}
                 />
-              </div>
+              </>
+            ) : (
+              <div className="empty-state">Нет истории риска. Запустите расчёт риска.</div>
             )}
-          </>
+          </div>
+        )}
+
+        {/* ── Unified Price Chart ────────────────────────────────────── */}
+        {selectedId !== null && positions.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <UnifiedPriceChartCard positions={positions} />
+          </div>
+        )}
+
+        {/* ── Correlation Matrix ─────────────────────────────────────── */}
+        {selectedId !== null && positions.length >= 2 && (
+          <div style={{ marginTop: 8 }}>
+            <CorrelationMatrixCard portfolioId={selectedId} positions={positions} />
+          </div>
         )}
       </div>
     </>

@@ -58,19 +58,34 @@ func main() {
 
 	ingestSvc := service.NewIngestService(collectors, pricesRepo, creditRepo, logRepo, returnsSvc, kp, log)
 
-	// Handler
+	// Handlers
 	h := handler.NewMarketDataHandler(ingestSvc, pricesRepo, creditRepo, logRepo)
+	bulkHandler := handler.NewBulkIngestHandler(ingestSvc, log)
+	chartHandler := handler.NewPriceChartHandler(pricesRepo, log)
 
-	// Router
+	// Router — register OpenAPI-generated routes first
 	strictHandler := api.NewStrictHandler(h, nil)
 	router := httpserver.NewRouter(log)
 	api.HandlerFromMux(strictHandler, router)
+
+	// Register additional routes not covered by OpenAPI spec
+	// Bulk historical ingestion (10 years, top 500 US + top 100 RU tickers)
+	router.Post("/api/market-data/ingest/bulk-historical", bulkHandler.HandleBulkHistoricalIngest)
+	router.Get("/api/market-data/ingest/bulk-historical/status", bulkHandler.HandleBulkHistoricalStatus)
+
+	// Daily refresh (previous trading day for all symbols in DB)
+	router.Post("/api/market-data/ingest/daily-refresh", bulkHandler.HandleDailyRefresh)
+
+	// Unified multi-asset price chart (normalized base-100 series)
+	router.Get("/api/market-data/prices/chart", chartHandler.HandlePriceChart)
+
 	if err := swaggerui.Register(router, "market-data-service", specBytes); err != nil {
 		log.Fatal("swagger ui", zap.Error(err))
 	}
 
 	timeouts := httpserver.DefaultTimeouts()
 	// Bulk ingest runs multiple collectors; responses are written only when ingestion finishes.
+	// For bulk-historical this can take hours, but the endpoint returns 202 immediately.
 	timeouts.WriteTimeout = 20 * time.Minute
 	if err := httpserver.RunWithTimeouts(ctx, ":"+cfg.Port, router, log, timeouts); err != nil {
 		log.Fatal("http server error", zap.Error(err))

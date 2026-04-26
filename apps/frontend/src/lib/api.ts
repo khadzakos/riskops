@@ -12,7 +12,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error ?? `HTTP ${res.status}`);
+    throw new Error(body.error ?? body.detail ?? `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -113,6 +113,52 @@ export interface IngestResponse {
   error?: string;
 }
 
+export interface BulkIngestTriggerResponse {
+  status: string;
+  message: string;
+}
+
+export interface BulkIngestSummary {
+  Status: string;
+  TotalRowsIngested: number;
+  USRowsIngested: number;
+  USSymbolsOK: number;
+  USSymbolsFailed: number;
+  RURowsIngested: number;
+  RUSymbolsOK: number;
+  RUSymbolsFailed: number;
+  StartedAt: string;
+  CompletedAt: string;
+}
+
+export interface BulkIngestStatusResponse {
+  running: boolean;
+  started_at?: string;
+  last_run?: BulkIngestSummary;
+}
+
+// Price chart types
+export interface PricePoint {
+  date: string;
+  value: number; // normalized (base 100) or raw
+  raw: number;
+}
+
+export interface AssetPriceSeries {
+  symbol: string;
+  currency: string;
+  source: string;
+  points: PricePoint[];
+}
+
+export interface PriceChartResponse {
+  symbols: string[];
+  date_from: string;
+  date_to: string;
+  series: AssetPriceSeries[];
+  normalized: boolean;
+}
+
 export const marketDataApi = {
   getSources: () => apiFetch<DataSource[]>('/market-data/sources'),
   getIngestionLog: (params?: { source?: string; status?: string; limit?: number }) => {
@@ -147,6 +193,31 @@ export const marketDataApi = {
   }) => apiFetch<IngestResponse>('/market-data/ingest', { method: 'POST', body: JSON.stringify(body) }),
   triggerIngestAll: (body?: { date_from?: string; date_to?: string }) =>
     apiFetch<IngestResponse[]>('/market-data/ingest/all', { method: 'POST', body: JSON.stringify(body ?? {}) }),
+
+  // Bulk historical ingestion (10 years, top 500 US + top 100 RU tickers)
+  triggerBulkHistorical: () =>
+    apiFetch<BulkIngestTriggerResponse>('/market-data/ingest/bulk-historical', { method: 'POST', body: '{}' }),
+  getBulkHistoricalStatus: () =>
+    apiFetch<BulkIngestStatusResponse>('/market-data/ingest/bulk-historical/status'),
+
+  // Daily refresh (previous trading day for all symbols in DB)
+  triggerDailyRefresh: () =>
+    apiFetch<BulkIngestTriggerResponse>('/market-data/ingest/daily-refresh', { method: 'POST', body: '{}' }),
+
+  // Unified multi-asset price chart
+  getPriceChart: (params: {
+    symbols: string[];
+    date_from?: string;
+    date_to?: string;
+    normalized?: boolean;
+  }) => {
+    const q = new URLSearchParams();
+    q.set('symbols', params.symbols.join(','));
+    if (params.date_from) q.set('date_from', params.date_from);
+    if (params.date_to) q.set('date_to', params.date_to);
+    if (params.normalized !== undefined) q.set('normalized', String(params.normalized));
+    return apiFetch<PriceChartResponse>(`/market-data/prices/chart?${q}`);
+  },
 };
 
 // ─── Inference Service ────────────────────────────────────────────────────────
@@ -172,6 +243,15 @@ export interface ModelHealthResponse {
   status: string;
   loaded_models: string[];
   fallback_available: boolean;
+}
+
+// Correlation matrix
+export interface CorrelationMatrixResponse {
+  portfolio_id: number;
+  symbols: string[];
+  matrix: number[][];
+  lookback_days: number;
+  computed_at: string;
 }
 
 // ─── Stress Testing / Scenarios ──────────────────────────────────────────────
@@ -217,6 +297,12 @@ export const inferenceApi = {
     horizon_days?: number;
   }) => apiFetch<PredictResponse>('/risk/predict', { method: 'POST', body: JSON.stringify(body) }),
   health: () => apiFetch<ModelHealthResponse>('/risk/predict/health'),
+
+  // Correlation matrix
+  getCorrelationMatrix: (portfolioId: number, lookbackDays = 252) =>
+    apiFetch<CorrelationMatrixResponse>(
+      `/risk/correlation?portfolio_id=${portfolioId}&lookback_days=${lookbackDays}`
+    ),
 
   // Stress testing
   listScenarios: () => apiFetch<ScenariosListResponse>('/risk/scenarios'),

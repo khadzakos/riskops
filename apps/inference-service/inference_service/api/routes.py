@@ -5,6 +5,7 @@ Endpoints:
   GET  /api/risk/predict/health       — model health check (which models are loaded)
   GET  /api/risk/scenarios            — list available stress scenarios
   POST /api/risk/scenarios/run        — run a stress test scenario
+  GET  /api/risk/correlation          — pairwise correlation matrix for portfolio assets
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from ..config import get_settings
 from ..db import get_engine
 from ..models.loader import get_registry
 from ..models.predictor import PredictionResult, predict
-from ..scenarios import SCENARIOS, StressRequest, run_scenario
+from ..scenarios import SCENARIOS, StressRequest, StressResult, run_scenario
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class ModelHealthResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# DB persistence
+# DB persistence — risk results
 # ---------------------------------------------------------------------------
 
 def _store_risk_results(result: PredictionResult) -> None:
@@ -117,6 +118,60 @@ def _store_risk_results(result: PredictionResult) -> None:
         "Stored risk results: portfolio=%d  method=%s  VaR=%.6f  CVaR=%.6f  metrics=%s",
         result.portfolio_id, result.method, result.var, result.cvar,
         [m for m, _ in rows],
+    )
+
+
+# ---------------------------------------------------------------------------
+# DB persistence — stress test results
+# ---------------------------------------------------------------------------
+
+def _store_stress_results(result: StressResult, req: StressRequest) -> None:
+    """Persist stress test results into the stress_test_results table."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO stress_test_results (
+                    portfolio_id, scenario_id, scenario_name, scenario_type,
+                    stressed_var, stressed_cvar, max_drawdown, worst_day,
+                    p10_return, p1_return, mean_return, n_observations,
+                    alpha, vol_multiplier, corr_shock, n_simulations,
+                    lookback_days, description, computed_at
+                ) VALUES (
+                    :portfolio_id, :scenario_id, :scenario_name, :scenario_type,
+                    :stressed_var, :stressed_cvar, :max_drawdown, :worst_day,
+                    :p10_return, :p1_return, :mean_return, :n_observations,
+                    :alpha, :vol_multiplier, :corr_shock, :n_simulations,
+                    :lookback_days, :description, :computed_at
+                )
+                """
+            ),
+            {
+                "portfolio_id": result.portfolio_id,
+                "scenario_id": result.scenario_id,
+                "scenario_name": result.scenario_name,
+                "scenario_type": result.scenario_type,
+                "stressed_var": result.stressed_var,
+                "stressed_cvar": result.stressed_cvar,
+                "max_drawdown": result.max_drawdown,
+                "worst_day": result.worst_day,
+                "p10_return": result.p10_return,
+                "p1_return": result.p1_return,
+                "mean_return": result.mean_return,
+                "n_observations": result.n_observations,
+                "alpha": req.alpha,
+                "vol_multiplier": req.vol_multiplier,
+                "corr_shock": req.corr_shock,
+                "n_simulations": req.n_simulations,
+                "lookback_days": req.lookback_days,
+                "description": result.description,
+                "computed_at": result.computed_at,
+            },
+        )
+    logger.info(
+        "Stored stress test result: portfolio=%d  scenario=%s  stressed_VaR=%.6f  stressed_CVaR=%.6f",
+        result.portfolio_id, result.scenario_id, result.stressed_var, result.stressed_cvar,
     )
 
 
@@ -185,6 +240,126 @@ async def model_health() -> ModelHealthResponse:
         status="ok" if loaded else "degraded",
         loaded_models=loaded,
         fallback_available=True,  # historical simulation always available
+    )
+
+
+# ---------------------------------------------------------------------------
+# Correlation matrix endpoint
+# ---------------------------------------------------------------------------
+
+class CorrelationMatrixResponse(BaseModel):
+    portfolio_id: int
+    symbols: list[str]
+    matrix: list[list[float]]
+    lookback_days: int
+    computed_at: str
+
+
+@router.get("/api/risk/correlation", response_model=CorrelationMatrixResponse)
+async def get_correlation_matrix(
+    portfolio_id: int,
+    lookback_days: int = 252,
+) -> CorrelationMatrixResponse:
+    """Compute pairwise Pearson correlation matrix for all assets in a portfolio.
+
+    Loads the last ``lookback_days`` of processed returns for each position
+    in the portfolio and returns the full N×N correlation matrix.
+
+    Args:
+        portfolio_id:  Portfolio ID.
+        lookback_days: Number of trading days to use (default 252 = 1 year).
+
+    Returns:
+        CorrelationMatrixResponse with symbols list and N×N matrix.
+    """
+    import numpy as np
+    import pandas as pd
+
+    engine = get_engine()
+
+    with engine.connect() as conn:
+        # Get portfolio positions
+        sym_rows = conn.execute(
+            text(
+                """
+                SELECT symbol FROM portfolio_positions
+                WHERE portfolio_id = :pid
+                ORDER BY symbol
+                """
+            ),
+            {"pid": portfolio_id},
+        ).fetchall()
+
+        if not sym_rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Portfolio {portfolio_id} has no positions",
+            )
+
+        symbols = [r[0] for r in sym_rows]
+
+        # Load returns for all symbols
+        returns_df = pd.read_sql(
+            text(
+                """
+                SELECT symbol, price_date, ret
+                FROM processed_returns
+                WHERE symbol = ANY(:symbols)
+                ORDER BY symbol, price_date ASC
+                """
+            ),
+            conn,
+            params={"symbols": symbols},
+        )
+
+    if returns_df.empty:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No processed_returns found for portfolio {portfolio_id} "
+                f"symbols: {symbols}. Run market data ingestion first."
+            ),
+        )
+
+    returns_df["ret"] = returns_df["ret"].astype(float)
+
+    # Keep last lookback_days per symbol
+    returns_df = (
+        returns_df.groupby("symbol", group_keys=False)
+        .apply(lambda g: g.tail(lookback_days))
+        .reset_index(drop=True)
+    )
+
+    # Pivot to (T × N) matrix, drop rows with any NaN
+    pivot = returns_df.pivot(index="price_date", columns="symbol", values="ret").dropna()
+
+    if pivot.shape[0] < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Insufficient overlapping return data to compute correlations.",
+        )
+
+    col_symbols = list(pivot.columns)
+    corr = pivot.corr(method="pearson")
+
+    # Convert to nested list of floats (handle NaN → 0.0)
+    matrix = [
+        [float(corr.iloc[i, j]) if not np.isnan(corr.iloc[i, j]) else 0.0
+         for j in range(len(col_symbols))]
+        for i in range(len(col_symbols))
+    ]
+
+    logger.info(
+        "Correlation matrix computed: portfolio=%d  symbols=%s  shape=%dx%d",
+        portfolio_id, col_symbols, len(col_symbols), len(col_symbols),
+    )
+
+    return CorrelationMatrixResponse(
+        portfolio_id=portfolio_id,
+        symbols=col_symbols,
+        matrix=matrix,
+        lookback_days=lookback_days,
+        computed_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -316,6 +491,7 @@ async def run_stress_scenario(body: ScenarioRunRequest) -> ScenarioRunResponse:
 
     Returns stressed VaR, CVaR, Max Drawdown, worst-day return, and
     percentile statistics of the simulated P&L distribution.
+    Results are persisted to the stress_test_results table.
     """
     logger.info(
         "Stress scenario request: portfolio=%d  scenario=%s  alpha=%.4f  n_sim=%d",
@@ -341,6 +517,12 @@ async def run_stress_scenario(body: ScenarioRunRequest) -> ScenarioRunResponse:
     except Exception as exc:
         logger.exception("Stress scenario failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Stress scenario failed: {exc}") from exc
+
+    # Persist stress test results to DB (non-blocking — log error but don't fail the request)
+    try:
+        _store_stress_results(result, req)
+    except Exception as exc:
+        logger.error("Failed to store stress test results in DB: %s", exc)
 
     return ScenarioRunResponse(
         portfolio_id=result.portfolio_id,

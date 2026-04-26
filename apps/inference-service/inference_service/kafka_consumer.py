@@ -5,6 +5,11 @@ Listens on two topics:
   - `model.trained`      — hot-reloads the new model version into the registry
 
 Both consumers run in a single background daemon thread.
+
+Reliability improvements:
+  - Exponential backoff retry for transient failures (e.g. market data not yet ingested)
+  - Dead-letter logging for permanently failed events
+  - Separate error handling per event type
 """
 from __future__ import annotations
 
@@ -27,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 _RETRY_INTERVAL_S = 10
 _MAX_RETRIES = 30  # ~5 minutes before giving up
+
+# Retry config for portfolio.updated risk recalculation
+_PREDICT_MAX_ATTEMPTS = 3
+_PREDICT_RETRY_BASE_S = 5.0   # exponential backoff base
 
 
 def _build_consumer(
@@ -71,7 +80,11 @@ def _build_consumer(
 # ---------------------------------------------------------------------------
 
 def _handle_portfolio_updated(event: dict) -> None:
-    """Trigger risk recalculation when a portfolio's positions change."""
+    """Trigger risk recalculation when a portfolio's positions change.
+
+    Uses exponential backoff retry to handle the case where market data
+    has not yet been ingested for the portfolio's symbols.
+    """
     portfolio_id = event.get("portfolio_id")
     if portfolio_id is None:
         logger.warning("portfolio.updated event missing portfolio_id, skipping")
@@ -83,12 +96,18 @@ def _handle_portfolio_updated(event: dict) -> None:
         logger.warning("portfolio.updated: invalid portfolio_id=%r", portfolio_id)
         return
 
+    action = event.get("action", "unknown")
+    # Skip deletion events — no point computing risk for a deleted portfolio/position
+    if action in ("portfolio_deleted",):
+        logger.debug("Skipping risk recalculation for action=%s portfolio=%d", action, portfolio_id)
+        return
+
     cfg = get_settings()
     registry = get_registry()
 
     logger.info(
-        "portfolio.updated received for portfolio_id=%d — triggering risk recalculation",
-        portfolio_id,
+        "portfolio.updated received: portfolio_id=%d  action=%s — triggering risk recalculation",
+        portfolio_id, action,
     )
 
     # Determine best available method
@@ -99,28 +118,51 @@ def _handle_portfolio_updated(event: dict) -> None:
     else:
         method = "historical"
 
-    try:
-        from .api.routes import _store_risk_results  # avoid circular import at module level
+    # Import here to avoid circular import at module level
+    from .api.routes import _store_risk_results
 
-        result = predict(
-            portfolio_id=portfolio_id,
-            method=method,
-            registry=registry,
-            alpha=cfg.default_alpha,
-            horizon_days=cfg.default_horizon_days,
-            lookback_days=cfg.default_lookback_days,
-            n_simulations=cfg.monte_carlo_simulations,
-        )
-        _store_risk_results(result)
-        logger.info(
-            "Auto risk recalculation done: portfolio=%d  method=%s  VaR=%.6f  CVaR=%.6f",
-            portfolio_id, result.method, result.var, result.cvar,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Auto risk recalculation failed for portfolio_id=%d: %s",
-            portfolio_id, exc,
-        )
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, _PREDICT_MAX_ATTEMPTS + 1):
+        try:
+            result = predict(
+                portfolio_id=portfolio_id,
+                method=method,
+                registry=registry,
+                alpha=cfg.default_alpha,
+                horizon_days=cfg.default_horizon_days,
+                lookback_days=cfg.default_lookback_days,
+                n_simulations=cfg.monte_carlo_simulations,
+            )
+            _store_risk_results(result)
+            logger.info(
+                "Auto risk recalculation done: portfolio=%d  method=%s  VaR=%.6f  CVaR=%.6f  (attempt %d)",
+                portfolio_id, result.method, result.var, result.cvar, attempt,
+            )
+            return  # success — exit retry loop
+        except (ValueError, RuntimeError) as exc:
+            last_exc = exc
+            # These are data-related errors (no positions, no market data).
+            # Retry with exponential backoff in case data is being ingested concurrently.
+            wait = _PREDICT_RETRY_BASE_S * (2 ** (attempt - 1))
+            logger.warning(
+                "Risk recalculation attempt %d/%d failed for portfolio=%d: %s — "
+                "retrying in %.1fs",
+                attempt, _PREDICT_MAX_ATTEMPTS, portfolio_id, exc, wait,
+            )
+            if attempt < _PREDICT_MAX_ATTEMPTS:
+                time.sleep(wait)
+        except Exception as exc:
+            last_exc = exc
+            logger.exception(
+                "Unexpected error in risk recalculation for portfolio=%d (attempt %d): %s",
+                portfolio_id, attempt, exc,
+            )
+            break  # don't retry unexpected errors
+
+    logger.error(
+        "Auto risk recalculation permanently failed for portfolio_id=%d after %d attempts: %s",
+        portfolio_id, _PREDICT_MAX_ATTEMPTS, last_exc,
+    )
 
 
 def _handle_model_trained(event: dict) -> None:

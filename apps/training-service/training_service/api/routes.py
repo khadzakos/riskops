@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -37,6 +39,43 @@ router = APIRouter(prefix="/api/risk")
 
 # Thread pool for background training (keeps FastAPI responsive)
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trainer")
+
+
+# ---------------------------------------------------------------------------
+# Market-data auto-ingest helper
+# ---------------------------------------------------------------------------
+
+def _trigger_market_data_ingest(symbols: list[str]) -> bool:
+    """POST to market-data-service to ingest historical data for *symbols*.
+
+    Calls the per-symbol ingest endpoint for each symbol, then waits up to
+    30 s for data to appear.  Returns True if the call succeeded (HTTP 2xx),
+    False on any network / timeout error.  Failures are non-fatal — the
+    caller will re-check data availability and raise 422 if still insufficient.
+    """
+    cfg = get_settings()
+    market_data_url = getattr(cfg, "market_data_service_url", "http://market-data-service:8083")
+    succeeded = False
+    for symbol in symbols:
+        url = f"{market_data_url}/api/market-data/ingest"
+        body = json.dumps({"source": "yahoo", "symbols": [symbol]}).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                if resp.status < 300:
+                    succeeded = True
+                    logger.info("Auto-ingest triggered for %s → HTTP %d", symbol, resp.status)
+        except Exception as exc:
+            logger.warning("Auto-ingest request failed for %s: %s", symbol, exc)
+    # Give the ingest pipeline a moment to write rows before we re-query
+    if succeeded:
+        time.sleep(2)
+    return succeeded
 
 
 # ---------------------------------------------------------------------------
@@ -435,15 +474,30 @@ async def run_backtest(body: BacktestRequestBody) -> BacktestResponse:
         body.model_type, body.symbols, body.alpha, body.lookback_days, body.test_days,
     )
 
-    # --- Load data ---
+    # --- Load data (with auto-ingest fallback) ---
+    total_needed = body.lookback_days + body.test_days
+
     try:
-        returns_df = load_returns(body.symbols, lookback_days=body.lookback_days + body.test_days)
+        returns_df = load_returns(body.symbols, lookback_days=total_needed)
     except RuntimeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     port_rets = build_portfolio_returns(returns_df, weights=body.weights)
 
-    total_needed = body.lookback_days + body.test_days
+    if len(port_rets) < total_needed:
+        logger.info(
+            "Insufficient data for backtest (%d < %d). Triggering auto-ingest for %s.",
+            len(port_rets), total_needed, body.symbols,
+        )
+        _trigger_market_data_ingest(body.symbols)
+
+        # Reload after ingest
+        try:
+            returns_df = load_returns(body.symbols, lookback_days=total_needed)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        port_rets = build_portfolio_returns(returns_df, weights=body.weights)
+
     if len(port_rets) < total_needed:
         raise HTTPException(
             status_code=422,
