@@ -80,11 +80,26 @@ func (h *PortfolioHandler) UpsertPosition(ctx context.Context, req api.UpsertPos
 	if req.Body == nil || req.Body.Symbol == "" {
 		return api.UpsertPosition400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse{Error: "symbol is required"}}, nil
 	}
-	var weight float64
+
+	var quantity, price, weight float64
+	if req.Body.Quantity != nil {
+		quantity = *req.Body.Quantity
+	}
+	if req.Body.Price != nil {
+		price = *req.Body.Price
+	}
 	if req.Body.Weight != nil {
 		weight = *req.Body.Weight
 	}
-	pos, err := h.svc.UpsertPosition(ctx, req.Id, req.Body.Symbol, weight)
+
+	// Validate: either quantity+price or explicit weight must be provided
+	if quantity <= 0 && price <= 0 && weight <= 0 {
+		return api.UpsertPosition400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse{
+			Error: "provide quantity and price (recommended) or an explicit weight",
+		}}, nil
+	}
+
+	pos, err := h.svc.UpsertPosition(ctx, req.Id, req.Body.Symbol, quantity, price, weight)
 	if err != nil {
 		return api.UpsertPosition500JSONResponse{InternalErrorJSONResponse: api.InternalErrorJSONResponse{Error: err.Error()}}, nil
 	}
@@ -142,6 +157,8 @@ func toAPIPosition(p models.Position) api.Position {
 		PortfolioId: p.PortfolioID,
 		Symbol:      p.Symbol,
 		Weight:      p.Weight,
+		Quantity:    p.Quantity,
+		Price:       p.Price,
 		UpdatedAt:   p.UpdatedAt,
 	}
 }

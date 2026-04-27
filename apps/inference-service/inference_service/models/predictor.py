@@ -66,6 +66,64 @@ def _sortino_ratio(returns: np.ndarray, risk_free_rate: float = 0.0) -> Optional
         return None
     return float(np.mean(excess) / downside_std * np.sqrt(_TRADING_DAYS))
 
+
+def _beta_to_benchmark(
+    port_returns: np.ndarray,
+    benchmark_symbol: str = "SPY",
+    lookback_days: int = 252,
+) -> Optional[float]:
+    """Compute portfolio beta relative to a benchmark (default: SPY).
+
+    Beta = Cov(portfolio, benchmark) / Var(benchmark)
+
+    Loads benchmark returns from processed_returns table.  Returns None if
+    benchmark data is unavailable or there are fewer than 30 overlapping days.
+    """
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            bench_df = pd.read_sql(
+                text(
+                    """
+                    SELECT price_date, ret
+                    FROM processed_returns
+                    WHERE symbol = :sym
+                    ORDER BY price_date ASC
+                    """
+                ),
+                conn,
+                params={"sym": benchmark_symbol},
+            )
+    except Exception as exc:
+        logger.warning("Could not load benchmark returns for %s: %s", benchmark_symbol, exc)
+        return None
+
+    if bench_df.empty:
+        logger.debug("No benchmark returns found for %s — beta will be None", benchmark_symbol)
+        return None
+
+    bench_df = bench_df.tail(lookback_days)
+    bench_rets = bench_df["ret"].astype(float).values
+
+    # Align lengths: use the shorter of the two series (both are already sorted by date)
+    n = min(len(port_returns), len(bench_rets))
+    if n < 30:
+        logger.debug(
+            "Too few overlapping days (%d) for beta computation (need ≥30)", n
+        )
+        return None
+
+    p = port_returns[-n:]
+    b = bench_rets[-n:]
+
+    bench_var = float(np.var(b, ddof=1))
+    if bench_var == 0.0:
+        return None
+
+    cov = float(np.cov(p, b, ddof=1)[0, 1])
+    return float(cov / bench_var)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -199,10 +257,12 @@ def predict_historical(
     mdd = _max_drawdown(port_rets)
     sharpe = _sharpe_ratio(port_rets)
     sortino = _sortino_ratio(port_rets)
+    beta = _beta_to_benchmark(port_rets, lookback_days=lookback_days)
 
     logger.info(
-        "Historical prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f",
+        "Historical prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  Beta=%s",
         portfolio_id, var, cvar, vol, mdd, sharpe or float("nan"),
+        f"{beta:.3f}" if beta is not None else "n/a",
     )
 
     return PredictionResult(
@@ -217,6 +277,7 @@ def predict_historical(
         max_drawdown=mdd,
         sharpe_ratio=sharpe,
         sortino_ratio=sortino,
+        beta_to_benchmark=beta,
         model_version="historical-v1",
     )
 
@@ -250,15 +311,17 @@ def predict_garch(
     pdf_z = stats.norm.pdf(z_alpha)
     cvar = float(pdf_z / (1.0 - alpha) * cond_vol)
 
-    # Additional metrics from historical returns (needed for MDD, Sharpe, Sortino)
+    # Additional metrics from historical returns (needed for MDD, Sharpe, Sortino, Beta)
     port_rets, _ = _load_portfolio_returns(portfolio_id, lookback_days)
     mdd = _max_drawdown(port_rets)
     sharpe = _sharpe_ratio(port_rets)
     sortino = _sortino_ratio(port_rets)
+    beta = _beta_to_benchmark(port_rets, lookback_days=lookback_days)
 
     logger.info(
-        "GARCH prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  model_v=%s",
-        portfolio_id, var, cvar, vol_annualised, mdd, sharpe or float("nan"), model.model_version,
+        "GARCH prediction: portfolio=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  Beta=%s  model_v=%s",
+        portfolio_id, var, cvar, vol_annualised, mdd, sharpe or float("nan"),
+        f"{beta:.3f}" if beta is not None else "n/a", model.model_version,
     )
 
     return PredictionResult(
@@ -273,6 +336,7 @@ def predict_garch(
         max_drawdown=mdd,
         sharpe_ratio=sharpe,
         sortino_ratio=sortino,
+        beta_to_benchmark=beta,
         model_version=f"garch-v{model.model_version}",
     )
 
@@ -343,10 +407,12 @@ def predict_montecarlo(
     mdd = _max_drawdown(port_rets_hist)
     sharpe = _sharpe_ratio(port_rets_hist)
     sortino = _sortino_ratio(port_rets_hist)
+    beta = _beta_to_benchmark(port_rets_hist, lookback_days=lookback_days)
 
     logger.info(
-        "Monte Carlo prediction: portfolio=%d  n=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  model_v=%s",
-        portfolio_id, n_simulations, var, cvar, vol, mdd, sharpe or float("nan"), model.model_version,
+        "Monte Carlo prediction: portfolio=%d  n=%d  VaR=%.6f  CVaR=%.6f  vol=%.4f  MDD=%.4f  Sharpe=%.3f  Beta=%s  model_v=%s",
+        portfolio_id, n_simulations, var, cvar, vol, mdd, sharpe or float("nan"),
+        f"{beta:.3f}" if beta is not None else "n/a", model.model_version,
     )
 
     return PredictionResult(
@@ -361,6 +427,7 @@ def predict_montecarlo(
         max_drawdown=mdd,
         sharpe_ratio=sharpe,
         sortino_ratio=sortino,
+        beta_to_benchmark=beta,
         model_version=f"montecarlo-v{model.model_version}",
     )
 

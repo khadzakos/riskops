@@ -90,8 +90,10 @@ def _store_risk_results(result: PredictionResult) -> None:
         ("sharpe_ratio", result.sharpe_ratio),
         ("sortino_ratio",result.sortino_ratio),
     ]
-    # Filter out metrics that were not computed (None values)
-    rows = [(metric, value) for metric, value in candidate_rows if value is not None]
+    # Filter out metrics that were not computed (None values).
+    # Cast to plain Python float to avoid numpy scalar types being serialised
+    # as "np.float64(...)" by SQLAlchemy, which PostgreSQL rejects.
+    rows = [(metric, float(value)) for metric, value in candidate_rows if value is not None]
     with engine.begin() as conn:
         for metric, value in rows:
             conn.execute(
@@ -104,10 +106,10 @@ def _store_risk_results(result: PredictionResult) -> None:
                     """
                 ),
                 {
-                    "portfolio_id": result.portfolio_id,
+                    "portfolio_id": int(result.portfolio_id),
                     "asof_date": result.asof_date.isoformat(),
-                    "horizon_days": result.horizon_days,
-                    "alpha": result.alpha,
+                    "horizon_days": int(result.horizon_days),
+                    "alpha": float(result.alpha),
                     "method": result.method,
                     "metric": metric,
                     "value": value,
@@ -148,23 +150,23 @@ def _store_stress_results(result: StressResult, req: StressRequest) -> None:
                 """
             ),
             {
-                "portfolio_id": result.portfolio_id,
+                "portfolio_id": int(result.portfolio_id),
                 "scenario_id": result.scenario_id,
                 "scenario_name": result.scenario_name,
                 "scenario_type": result.scenario_type,
-                "stressed_var": result.stressed_var,
-                "stressed_cvar": result.stressed_cvar,
-                "max_drawdown": result.max_drawdown,
-                "worst_day": result.worst_day,
-                "p10_return": result.p10_return,
-                "p1_return": result.p1_return,
-                "mean_return": result.mean_return,
-                "n_observations": result.n_observations,
-                "alpha": req.alpha,
-                "vol_multiplier": req.vol_multiplier,
-                "corr_shock": req.corr_shock,
-                "n_simulations": req.n_simulations,
-                "lookback_days": req.lookback_days,
+                "stressed_var": float(result.stressed_var),
+                "stressed_cvar": float(result.stressed_cvar),
+                "max_drawdown": float(result.max_drawdown),
+                "worst_day": float(result.worst_day),
+                "p10_return": float(result.p10_return),
+                "p1_return": float(result.p1_return),
+                "mean_return": float(result.mean_return),
+                "n_observations": int(result.n_observations),
+                "alpha": float(req.alpha),
+                "vol_multiplier": float(req.vol_multiplier) if req.vol_multiplier is not None else None,
+                "corr_shock": float(req.corr_shock) if req.corr_shock is not None else None,
+                "n_simulations": int(req.n_simulations),
+                "lookback_days": int(req.lookback_days),
                 "description": result.description,
                 "computed_at": result.computed_at,
             },

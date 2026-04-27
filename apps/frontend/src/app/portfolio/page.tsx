@@ -500,7 +500,8 @@ export default function PortfolioPage() {
 
   // New position form
   const [newSymbol, setNewSymbol] = useState('');
-  const [newWeight, setNewWeight] = useState('');
+  const [newQuantity, setNewQuantity] = useState('');
+  const [newPrice, setNewPrice] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
@@ -553,17 +554,25 @@ export default function PortfolioPage() {
   }, [selectedId, loadData]);
 
   const handleAddPosition = async () => {
-    if (!selectedId || !newSymbol || !newWeight) return;
+    if (!selectedId || !newSymbol || !newQuantity || !newPrice) return;
+    const qty = parseFloat(newQuantity);
+    const prc = parseFloat(newPrice);
+    if (isNaN(qty) || qty <= 0 || isNaN(prc) || prc <= 0) {
+      setSaveMsg('Ошибка: количество и цена должны быть положительными числами');
+      return;
+    }
     setSaving(true);
     setSaveMsg(null);
     try {
       await portfolioApi.upsertPosition(selectedId, {
         symbol: newSymbol.toUpperCase(),
-        weight: parseFloat(newWeight),
+        quantity: qty,
+        price: prc,
       });
-      setSaveMsg(`Позиция ${newSymbol.toUpperCase()} сохранена`);
+      setSaveMsg(`Позиция ${newSymbol.toUpperCase()} сохранена (${qty} шт. × $${prc.toFixed(2)})`);
       setNewSymbol('');
-      setNewWeight('');
+      setNewQuantity('');
+      setNewPrice('');
       await loadData(selectedId);
     } catch (e: unknown) {
       setSaveMsg(e instanceof Error ? `Ошибка: ${e.message}` : 'Ошибка сохранения');
@@ -748,27 +757,39 @@ export default function PortfolioPage() {
                   placeholder="Тикер (AAPL)"
                   value={newSymbol}
                   onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
+                  style={{ width: 100 }}
+                />
+                <input
+                  className="input"
+                  placeholder="Кол-во (100)"
+                  type="number"
+                  step="1"
+                  min="0.0001"
+                  value={newQuantity}
+                  onChange={(e) => setNewQuantity(e.target.value)}
                   style={{ width: 110 }}
                 />
                 <input
                   className="input"
-                  placeholder="Вес (0.25)"
+                  placeholder="Цена ($182.50)"
                   type="number"
                   step="0.01"
-                  min="0"
-                  max="1"
-                  value={newWeight}
-                  onChange={(e) => setNewWeight(e.target.value)}
-                  style={{ width: 100 }}
+                  min="0.0001"
+                  value={newPrice}
+                  onChange={(e) => setNewPrice(e.target.value)}
+                  style={{ width: 120 }}
                 />
                 <button
                   className="btn-primary"
                   onClick={handleAddPosition}
-                  disabled={saving || !newSymbol || !newWeight}
+                  disabled={saving || !newSymbol || !newQuantity || !newPrice}
                   style={{ fontSize: 12 }}
                 >
                   {saving ? '…' : '+ Добавить'}
                 </button>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--ink-4)', marginBottom: 8 }}>
+                Вес рассчитывается автоматически: кол-во × цена / сумма всех позиций
               </div>
 
               {dataLoading ? (
@@ -780,43 +801,59 @@ export default function PortfolioPage() {
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--hair)' }}>
                       <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Тикер</th>
-                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Вес</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Кол-во</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Цена</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Стоимость</th>
                       <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Доля</th>
                       <th style={{ width: 32 }} />
                     </tr>
                   </thead>
                   <tbody>
-                    {positions.map((p, i) => (
-                      <tr key={p.symbol} style={{ borderBottom: '1px solid var(--hair)' }}>
-                        <td style={{ padding: '6px 8px' }}>
-                          <div className="row" style={{ gap: 8 }}>
-                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length], flexShrink: 0, marginTop: 3 }} />
-                            <span className="mono" style={{ fontWeight: 600 }}>{p.symbol}</span>
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
-                          {p.weight.toFixed(4)}
-                        </td>
-                        <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums' }}>
-                          {(p.weight * 100).toFixed(1)}%
-                        </td>
-                        <td style={{ textAlign: 'right', padding: '6px 4px' }}>
-                          <button
-                            onClick={() => handleDeletePosition(p.symbol)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--crit)', fontSize: 14, padding: '0 4px' }}
-                            title="Удалить позицию"
-                          >
-                            ×
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {positions.map((p, i) => {
+                      const posValue = p.quantity > 0 && p.price > 0 ? p.quantity * p.price : null;
+                      return (
+                        <tr key={p.symbol} style={{ borderBottom: '1px solid var(--hair)' }}>
+                          <td style={{ padding: '6px 8px' }}>
+                            <div className="row" style={{ gap: 8 }}>
+                              <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length], flexShrink: 0, marginTop: 3 }} />
+                              <span className="mono" style={{ fontWeight: 600 }}>{p.symbol}</span>
+                            </div>
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: 'var(--ink-2)' }}>
+                            {p.quantity > 0 ? p.quantity.toLocaleString('ru-RU', { maximumFractionDigits: 4 }) : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: 'var(--ink-2)' }}>
+                            {p.price > 0 ? `$${p.price.toFixed(2)}` : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
+                            {posValue !== null ? `$${posValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}` : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums' }}>
+                            {(p.weight * 100).toFixed(1)}%
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '6px 4px' }}>
+                            <button
+                              onClick={() => handleDeletePosition(p.symbol)}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--crit)', fontSize: 14, padding: '0 4px' }}
+                              title="Удалить позицию"
+                            >
+                              ×
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot>
                     <tr>
                       <td style={{ padding: '6px 8px', fontSize: 11, color: 'var(--ink-3)' }}>Итого</td>
+                      <td />
+                      <td />
                       <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-                        {totalWeight.toFixed(4)}
+                        {(() => {
+                          const total = positions.reduce((s, p) => s + (p.quantity > 0 && p.price > 0 ? p.quantity * p.price : 0), 0);
+                          return total > 0 ? `$${total.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}` : '—';
+                        })()}
                       </td>
                       <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)', fontVariantNumeric: 'tabular-nums' }}>
                         {(totalWeight * 100).toFixed(1)}%

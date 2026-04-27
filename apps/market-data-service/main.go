@@ -58,6 +58,10 @@ func main() {
 
 	ingestSvc := service.NewIngestService(collectors, pricesRepo, creditRepo, logRepo, returnsSvc, kp, log)
 
+	// Ensure benchmark data (SPY, ^GSPC) is available for beta computation.
+	// Runs in background so it doesn't block startup.
+	go ingestSvc.EnsureBenchmarkData(ctx)
+
 	// Handlers
 	h := handler.NewMarketDataHandler(ingestSvc, pricesRepo, creditRepo, logRepo)
 	bulkHandler := handler.NewBulkIngestHandler(ingestSvc, log)

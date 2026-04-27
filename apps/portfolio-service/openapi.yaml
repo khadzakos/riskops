@@ -249,7 +249,7 @@ components:
 
     Position:
       type: object
-      required: [portfolio_id, symbol, weight, updated_at]
+      required: [portfolio_id, symbol, weight, quantity, price, updated_at]
       properties:
         portfolio_id:
           type: integer
@@ -259,6 +259,15 @@ components:
         weight:
           type: number
           format: double
+          description: Normalised weight (0–1), derived from quantity × price / total_value
+        quantity:
+          type: number
+          format: double
+          description: Number of shares held
+        price:
+          type: number
+          format: double
+          description: Price per share at time of entry (used to compute weight)
         updated_at:
           type: string
           format: date-time
@@ -270,9 +279,19 @@ components:
         symbol:
           type: string
           minLength: 1
+        quantity:
+          type: number
+          format: double
+          description: Number of shares. If provided together with price, weight is auto-computed.
+        price:
+          type: number
+          format: double
+          description: Price per share. Required when quantity is provided.
         weight:
           type: number
           format: double
+          description: >
+            Explicit weight (0–1). Used only when quantity/price are not provided (legacy mode).
 
     RiskResult:
       type: object

@@ -15,6 +15,8 @@ type Position struct {
 	PortfolioID int64     `json:"portfolio_id"`
 	Symbol      string    `json:"symbol"`
 	Weight      float64   `json:"weight"`
+	Quantity    float64   `json:"quantity"`
+	Price       float64   `json:"price"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 

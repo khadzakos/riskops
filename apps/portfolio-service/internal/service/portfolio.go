@@ -53,15 +53,17 @@ func (s *PortfolioService) ListPositions(ctx context.Context, portfolioID int64)
 	return s.repo.ListPositions(ctx, portfolioID)
 }
 
-func (s *PortfolioService) UpsertPosition(ctx context.Context, portfolioID int64, symbol string, weight float64) (*models.Position, error) {
-	pos, err := s.repo.UpsertPosition(ctx, portfolioID, symbol, weight)
+func (s *PortfolioService) UpsertPosition(ctx context.Context, portfolioID int64, symbol string, quantity, price, weight float64) (*models.Position, error) {
+	pos, err := s.repo.UpsertPosition(ctx, portfolioID, symbol, quantity, price, weight)
 	if err != nil {
 		return nil, err
 	}
 	s.log.Info("position upserted",
 		zap.Int64("portfolio_id", portfolioID),
 		zap.String("symbol", symbol),
-		zap.Float64("weight", weight))
+		zap.Float64("quantity", quantity),
+		zap.Float64("price", price),
+		zap.Float64("weight", pos.Weight))
 	sym := symbol
 	s.publishPortfolioUpdated(ctx, portfolioID, "position_upserted", &sym)
 	return pos, nil

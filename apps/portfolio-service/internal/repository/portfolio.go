@@ -75,7 +75,7 @@ func (r *PortfolioRepo) Delete(ctx context.Context, id int64) error {
 
 func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([]models.Position, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT portfolio_id, symbol, weight, updated_at
+		`SELECT portfolio_id, symbol, weight, quantity, price, updated_at
 		 FROM portfolio_positions WHERE portfolio_id = $1 ORDER BY symbol`, portfolioID)
 	if err != nil {
 		return nil, fmt.Errorf("list positions: %w", err)
@@ -85,7 +85,7 @@ func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([
 	var out []models.Position
 	for rows.Next() {
 		var p models.Position
-		if err := rows.Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		out = append(out, p)
@@ -93,20 +93,70 @@ func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([
 	return out, rows.Err()
 }
 
-func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, symbol string, weight float64) (*models.Position, error) {
-	var p models.Position
-	err := r.db.QueryRow(ctx,
-		`INSERT INTO portfolio_positions (portfolio_id, symbol, weight)
-		 VALUES ($1, $2, $3)
+// UpsertPosition inserts or updates a position.
+//
+// If quantity > 0 and price > 0, the weight is computed as quantity*price and
+// then all positions in the portfolio are renormalized so that weights sum to 1.
+// If quantity == 0 (legacy / explicit weight mode), the provided weight is stored
+// directly without renormalization.
+func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, symbol string, quantity, price, weight float64) (*models.Position, error) {
+	// Determine raw weight for this position
+	rawWeight := weight
+	if quantity > 0 && price > 0 {
+		rawWeight = quantity * price
+	}
+
+	// Upsert the position with the raw weight value
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO portfolio_positions (portfolio_id, symbol, weight, quantity, price)
+		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (portfolio_id, symbol) DO UPDATE SET
-		   weight = EXCLUDED.weight, updated_at = NOW()
-		 RETURNING portfolio_id, symbol, weight, updated_at`,
-		portfolioID, symbol, weight).
-		Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.UpdatedAt)
+		   weight = EXCLUDED.weight,
+		   quantity = EXCLUDED.quantity,
+		   price = EXCLUDED.price,
+		   updated_at = NOW()`,
+		portfolioID, symbol, rawWeight, quantity, price)
 	if err != nil {
 		return nil, fmt.Errorf("upsert position: %w", err)
 	}
+
+	// Renormalize all positions in the portfolio when using quantity-based mode
+	if quantity > 0 && price > 0 {
+		if err := r.renormalizeWeights(ctx, portfolioID); err != nil {
+			return nil, fmt.Errorf("renormalize weights: %w", err)
+		}
+	}
+
+	// Return the updated position
+	var p models.Position
+	err = r.db.QueryRow(ctx,
+		`SELECT portfolio_id, symbol, weight, quantity, price, updated_at
+		 FROM portfolio_positions WHERE portfolio_id = $1 AND symbol = $2`,
+		portfolioID, symbol).
+		Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("fetch upserted position: %w", err)
+	}
 	return &p, nil
+}
+
+// renormalizeWeights rescales all position weights in a portfolio so they sum to 1.0.
+// Raw weights (quantity × price) are divided by the total portfolio value.
+func (r *PortfolioRepo) renormalizeWeights(ctx context.Context, portfolioID int64) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE portfolio_positions pp
+		 SET weight = pp.weight / totals.total_weight,
+		     updated_at = NOW()
+		 FROM (
+		     SELECT portfolio_id, SUM(weight) AS total_weight
+		     FROM portfolio_positions
+		     WHERE portfolio_id = $1
+		     GROUP BY portfolio_id
+		 ) totals
+		 WHERE pp.portfolio_id = totals.portfolio_id
+		   AND totals.total_weight > 0`,
+		portfolioID)
+	return err
 }
 
 func (r *PortfolioRepo) DeletePosition(ctx context.Context, portfolioID int64, symbol string) error {

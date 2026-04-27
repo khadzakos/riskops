@@ -32,6 +32,8 @@ export interface Position {
   portfolio_id: number;
   symbol: string;
   weight: number;
+  quantity: number;
+  price: number;
   updated_at: string;
 }
 
@@ -57,7 +59,7 @@ export const portfolioApi = {
     fetch(`${BASE}/portfolios/${id}`, { method: 'DELETE' }),
 
   listPositions: (id: number) => apiFetch<Position[]>(`/portfolios/${id}/positions`),
-  upsertPosition: (id: number, body: { symbol: string; weight: number }) =>
+  upsertPosition: (id: number, body: { symbol: string; quantity?: number; price?: number; weight?: number }) =>
     apiFetch<Position>(`/portfolios/${id}/positions`, { method: 'POST', body: JSON.stringify(body) }),
   deletePosition: (id: number, symbol: string) =>
     fetch(`${BASE}/portfolios/${id}/positions/${symbol}`, { method: 'DELETE' }),
