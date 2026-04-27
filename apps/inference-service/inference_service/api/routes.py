@@ -130,8 +130,36 @@ def _store_risk_results(result: PredictionResult) -> None:
 def _store_stress_results(result: StressResult, req: StressRequest) -> None:
     """Persist stress test results into the stress_test_results table."""
     engine = get_engine()
+    # Ensure computed_at is a proper datetime string for PostgreSQL TIMESTAMPTZ.
+    # StressResult.computed_at is already an ISO-8601 string with timezone offset.
+    computed_at_str: str = result.computed_at
+    if not computed_at_str:
+        computed_at_str = datetime.now(timezone.utc).isoformat()
+
+    params = {
+        "portfolio_id": int(result.portfolio_id),
+        "scenario_id": str(result.scenario_id),
+        "scenario_name": str(result.scenario_name),
+        "scenario_type": str(result.scenario_type),
+        "stressed_var": float(result.stressed_var),
+        "stressed_cvar": float(result.stressed_cvar),
+        "max_drawdown": float(result.max_drawdown),
+        "worst_day": float(result.worst_day),
+        "p10_return": float(result.p10_return),
+        "p1_return": float(result.p1_return),
+        "mean_return": float(result.mean_return),
+        "n_observations": int(result.n_observations),
+        "alpha": float(req.alpha),
+        "vol_multiplier": float(req.vol_multiplier) if req.vol_multiplier is not None else None,
+        "corr_shock": float(req.corr_shock) if req.corr_shock is not None else None,
+        "n_simulations": int(req.n_simulations),
+        "lookback_days": int(req.lookback_days),
+        "description": str(result.description),
+        "computed_at": computed_at_str,
+    }
+
     with engine.begin() as conn:
-        conn.execute(
+        row = conn.execute(
             text(
                 """
                 INSERT INTO stress_test_results (
@@ -145,35 +173,19 @@ def _store_stress_results(result: StressResult, req: StressRequest) -> None:
                     :stressed_var, :stressed_cvar, :max_drawdown, :worst_day,
                     :p10_return, :p1_return, :mean_return, :n_observations,
                     :alpha, :vol_multiplier, :corr_shock, :n_simulations,
-                    :lookback_days, :description, :computed_at
+                    :lookback_days, :description, :computed_at::timestamptz
                 )
+                RETURNING id
                 """
             ),
-            {
-                "portfolio_id": int(result.portfolio_id),
-                "scenario_id": result.scenario_id,
-                "scenario_name": result.scenario_name,
-                "scenario_type": result.scenario_type,
-                "stressed_var": float(result.stressed_var),
-                "stressed_cvar": float(result.stressed_cvar),
-                "max_drawdown": float(result.max_drawdown),
-                "worst_day": float(result.worst_day),
-                "p10_return": float(result.p10_return),
-                "p1_return": float(result.p1_return),
-                "mean_return": float(result.mean_return),
-                "n_observations": int(result.n_observations),
-                "alpha": float(req.alpha),
-                "vol_multiplier": float(req.vol_multiplier) if req.vol_multiplier is not None else None,
-                "corr_shock": float(req.corr_shock) if req.corr_shock is not None else None,
-                "n_simulations": int(req.n_simulations),
-                "lookback_days": int(req.lookback_days),
-                "description": result.description,
-                "computed_at": result.computed_at,
-            },
-        )
+            params,
+        ).fetchone()
+    inserted_id = row[0] if row else None
     logger.info(
-        "Stored stress test result: portfolio=%d  scenario=%s  stressed_VaR=%.6f  stressed_CVaR=%.6f",
-        result.portfolio_id, result.scenario_id, result.stressed_var, result.stressed_cvar,
+        "Stored stress test result: id=%s  portfolio=%d  scenario=%s  "
+        "stressed_VaR=%.6f  stressed_CVaR=%.6f",
+        inserted_id, result.portfolio_id, result.scenario_id,
+        result.stressed_var, result.stressed_cvar,
     )
 
 

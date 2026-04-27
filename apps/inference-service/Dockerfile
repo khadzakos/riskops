@@ -11,7 +11,8 @@ RUN python -m pip install --no-cache-dir -U pip uv
 COPY pyproject.toml /app/pyproject.toml
 COPY inference_service /app/inference_service
 
-RUN uv pip install --system -e .
+RUN UV_NO_CACHE=1 uv pip install --system -e . \
+    && rm -rf /root/.cache/uv
 
 EXPOSE 8085
 

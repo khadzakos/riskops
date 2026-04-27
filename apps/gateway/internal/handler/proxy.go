@@ -44,9 +44,10 @@ func (h *ProxyHandler) Register(r chi.Router) {
 	r.Handle("/api/portfolio-service/docs", h.reverseProxy(h.portfolioURL))
 	r.Handle("/api/market-data/*", h.reverseProxy(h.marketURL))
 	r.Handle("/api/market-data", h.reverseProxy(h.marketURL))
-	// Inference Service — predict + stress scenarios
+	// Inference Service — predict + stress scenarios + correlation
 	r.Handle("/api/risk/predict/*", h.reverseProxy(h.inferenceURL))
 	r.Handle("/api/risk/predict", h.reverseProxy(h.inferenceURL))
+	r.Handle("/api/risk/correlation", h.reverseProxy(h.inferenceURL))
 	r.Handle("/api/risk/scenarios/run", h.reverseProxy(h.inferenceURL))
 	r.Handle("/api/risk/scenarios/*", h.reverseProxy(h.inferenceURL))
 	r.Handle("/api/risk/scenarios", h.reverseProxy(h.inferenceURL))

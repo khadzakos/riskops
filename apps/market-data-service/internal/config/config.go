@@ -9,6 +9,7 @@ type Config struct {
 	DatabaseURL  string
 	LogLevel     string
 	KafkaBrokers string // comma-separated; empty disables Kafka publishing
+	FREDAPIKey   string // FRED API key
 }
 
 func Load() Config {
@@ -17,5 +18,6 @@ func Load() Config {
 		DatabaseURL:  config.MustEnv("DATABASE_URL"),
 		LogLevel:     config.Env("LOG_LEVEL", "info"),
 		KafkaBrokers: config.Env("KAFKA_BROKERS", ""),
+		FREDAPIKey:   config.Env("FRED_API_KEY", ""),
 	}
 }

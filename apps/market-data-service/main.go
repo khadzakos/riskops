@@ -49,6 +49,7 @@ func main() {
 		"moex":             collector.NewMOEXCollector(),
 		"synthetic":        collector.NewSyntheticCollector(),
 		"credit_synthetic": collector.NewCreditSyntheticCollector(),
+		"fred":             collector.NewFREDCollector(cfg.FREDAPIKey, log),
 	}
 
 	// Services
@@ -61,6 +62,10 @@ func main() {
 	// Ensure benchmark data (SPY, ^GSPC) is available for beta computation.
 	// Runs in background so it doesn't block startup.
 	go ingestSvc.EnsureBenchmarkData(ctx)
+
+	// Ensure FRED macro/rates data is available (DGS10, FEDFUNDS, VIX, CPI, …).
+	// Runs in background so it doesn't block startup.
+	go ingestSvc.EnsureFREDData(ctx)
 
 	// Handlers
 	h := handler.NewMarketDataHandler(ingestSvc, pricesRepo, creditRepo, logRepo)

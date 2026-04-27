@@ -336,7 +336,6 @@ function UnifiedPriceChartCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<'3m' | '6m' | '1y' | '2y' | '5y'>('1y');
-  const [normalized, setNormalized] = useState(true);
 
   const periodToDateFrom = (p: string): string => {
     const now = new Date();
@@ -359,7 +358,7 @@ function UnifiedPriceChartCard({
       const result = await marketDataApi.getPriceChart({
         symbols,
         date_from: periodToDateFrom(period),
-        normalized,
+        normalized: false,
       });
       setData(result);
     } catch (e: unknown) {
@@ -367,7 +366,7 @@ function UnifiedPriceChartCard({
     } finally {
       setLoading(false);
     }
-  }, [positions, period, normalized]);
+  }, [positions, period]);
 
   useEffect(() => {
     load();
@@ -384,7 +383,7 @@ function UnifiedPriceChartCard({
     );
   }
 
-  // Build LineSeries from price chart data
+  // Build LineSeries from price chart data — always use raw close prices
   const chartSeries: LineSeries[] = [];
   if (data?.series) {
     data.series.forEach((s, i) => {
@@ -392,7 +391,7 @@ function UnifiedPriceChartCard({
         chartSeries.push({
           name: s.symbol,
           color: COLORS[i % COLORS.length],
-          data: s.points.map((p) => ({ x: p.date, y: p.value })),
+          data: s.points.map((p) => ({ x: p.date, y: p.raw })),
         });
       }
     });
@@ -422,23 +421,6 @@ function UnifiedPriceChartCard({
               {p}
             </button>
           ))}
-          {/* Normalized toggle */}
-          <button
-            onClick={() => setNormalized((v) => !v)}
-            style={{
-              fontSize: 11,
-              padding: '2px 8px',
-              height: 24,
-              background: normalized ? 'var(--accent)' : 'var(--bg-2)',
-              color: normalized ? '#fff' : 'var(--ink-2)',
-              border: `1px solid ${normalized ? 'var(--accent)' : 'var(--hair-strong)'}`,
-              borderRadius: 4,
-              cursor: 'pointer',
-            }}
-            title={normalized ? 'Нормализовано (база 100)' : 'Абсолютные цены'}
-          >
-            {normalized ? 'База 100' : 'Цена'}
-          </button>
           <button className="btn-secondary" onClick={load} disabled={loading} style={{ fontSize: 11, padding: '3px 10px', height: 26 }}>
             {loading ? '…' : '↺'}
           </button>
@@ -467,7 +449,7 @@ function UnifiedPriceChartCard({
         <LineChart
           series={chartSeries}
           height={240}
-          yFormat={(v) => normalized ? `${v.toFixed(1)}` : `${v.toFixed(2)}`}
+          yFormat={(v) => `$${v.toFixed(2)}`}
           xFormat={(v) => String(v).slice(5)}
           xTicks={8}
         />
@@ -477,8 +459,7 @@ function UnifiedPriceChartCard({
 
       {data && (
         <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 4, textAlign: 'right' }}>
-          {normalized ? 'Нормализовано к базе 100 на начало периода' : 'Абсолютные цены закрытия'}
-          {' · '}{data.date_from} — {data.date_to}
+          Цены закрытия · {data.date_from} — {data.date_to}
         </div>
       )}
     </div>
@@ -527,21 +508,26 @@ export default function PortfolioPage() {
   const loadData = useCallback(async (id: number) => {
     setDataLoading(true);
     try {
-      const [pos, latest, history] = await Promise.all([
-        portfolioApi.listPositions(id),
-        portfolioApi.getLatestRisk(id),
-        portfolioApi.getRiskHistory(id, 90),
-      ]);
+      // Load positions first (needed for charts)
+      const pos = await portfolioApi.listPositions(id);
       setPositions(pos);
-      setLatestRisk(latest);
-      setRiskHistory(history);
 
+      // Run prediction first — this stores results to DB so history is up-to-date
+      let pred: import('@/lib/api').PredictResponse | null = null;
       try {
-        const pred = await inferenceApi.predict({ portfolio_id: id });
+        pred = await inferenceApi.predict({ portfolio_id: id });
         setPredictResult(pred);
       } catch {
         setPredictResult(null);
       }
+
+      // Now load risk data (history will include the just-stored prediction)
+      const [latest, history] = await Promise.all([
+        portfolioApi.getLatestRisk(id),
+        portfolioApi.getRiskHistory(id, 500),
+      ]);
+      setLatestRisk(latest);
+      setRiskHistory(history);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки');
     } finally {
@@ -610,9 +596,21 @@ export default function PortfolioPage() {
   const mddColor = mddVal === null ? 'var(--ink-4)' : mddVal > -0.1 ? 'var(--good)' : mddVal > -0.2 ? 'var(--warn)' : 'var(--crit)';
   const betaColor = betaVal === null ? 'var(--ink-4)' : betaVal >= 0.8 && betaVal <= 1.2 ? 'var(--accent)' : betaVal < 0.8 ? 'var(--good)' : 'var(--warn)';
 
+  // Build risk history chart series.
+  // riskHistory is ordered by created_at DESC (newest first).
+  // For each metric, keep only the latest entry per asof_date, then sort ASC for the chart.
+  const dedupeByDate = (entries: RiskResult[]): RiskResult[] => {
+    const seen = new Map<string, RiskResult>();
+    // entries are newest-first; first occurrence of each date wins (= most recent run)
+    for (const e of entries) {
+      if (!seen.has(e.asof_date)) seen.set(e.asof_date, e);
+    }
+    return Array.from(seen.values()).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
+  };
+
   const riskChartSeries: LineSeries[] = [];
-  const varSorted = (historyByMetric['var'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
-  const cvarSorted = (historyByMetric['cvar'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
+  const varSorted = dedupeByDate(historyByMetric['var'] ?? []);
+  const cvarSorted = dedupeByDate(historyByMetric['cvar'] ?? []);
   if (varSorted.length > 0) riskChartSeries.push({ name: 'VaR', color: 'var(--primary)', data: varSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
   if (cvarSorted.length > 0) riskChartSeries.push({ name: 'CVaR', color: 'var(--crit)', data: cvarSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
 

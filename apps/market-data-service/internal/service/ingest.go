@@ -410,12 +410,14 @@ func (s *IngestService) ListSources() []SourceDescriptor {
 		"moex":             "Daily 19:00 UTC (Airflow)",
 		"synthetic":        "On-demand",
 		"credit_synthetic": "On-demand",
+		"fred":             "Weekly (Airflow) + on startup",
 	}
 	descriptions := map[string]string{
 		"yahoo":            "Yahoo Finance v8 API — US/international equities, ETFs, indices",
 		"moex":             "MOEX ISS — Russian stocks, bonds, indices (TQBR board)",
 		"synthetic":        "GBM synthetic price generator for development and testing",
 		"credit_synthetic": "Synthetic credit portfolio generator (PD/LGD calibrated)",
+		"fred":             "Federal Reserve Economic Data — rates, spreads, macro indicators (DGS10, FEDFUNDS, VIX, CPI, …)",
 	}
 
 	var out []SourceDescriptor

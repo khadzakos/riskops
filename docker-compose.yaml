@@ -231,6 +231,7 @@ services:
       DATABASE_URL: postgresql://riskops:riskops@db:5432/riskops
       LOG_LEVEL: info
       KAFKA_BROKERS: kafka:9092
+      FRED_API_KEY: "e531b375faba60b9228efde0901f08cc"
     depends_on:
       db:
         condition: service_healthy
