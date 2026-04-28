@@ -132,6 +132,82 @@ func (r *PricesRepo) GetPrices(ctx context.Context, symbols []string, dateFrom, 
 	return out, rows.Err()
 }
 
+// GetPricesAsc returns prices in ascending date order (oldest first).
+// Unlike GetPrices (which orders DESC), this is suitable for chart rendering
+// where data must be chronologically ordered. Each symbol is fetched with its
+// own per-symbol limit to avoid cross-symbol truncation.
+func (r *PricesRepo) GetPricesAsc(ctx context.Context, symbols []string, dateFrom, dateTo, source string, limit int) ([]models.RawPrice, error) {
+	if limit <= 0 {
+		limit = 3000
+	}
+
+	conditions := []string{}
+	args := []interface{}{}
+	idx := 1
+
+	if len(symbols) > 0 {
+		conditions = append(conditions, fmt.Sprintf("symbol = ANY($%d)", idx))
+		args = append(args, symbols)
+		idx++
+	}
+	if dateFrom != "" {
+		conditions = append(conditions, fmt.Sprintf("price_date >= $%d", idx))
+		args = append(args, dateFrom)
+		idx++
+	}
+	if dateTo != "" {
+		conditions = append(conditions, fmt.Sprintf("price_date <= $%d", idx))
+		args = append(args, dateTo)
+		idx++
+	}
+	if source != "" {
+		conditions = append(conditions, fmt.Sprintf("source = $%d", idx))
+		args = append(args, source)
+		idx++
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	args = append(args, limit)
+	query := fmt.Sprintf(`
+		SELECT symbol, price_date, close, currency, source, ingested_at
+		FROM raw_prices
+		%s
+		ORDER BY symbol, price_date ASC
+		LIMIT $%d`, where, idx)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get prices asc: %w", err)
+	}
+	defer rows.Close()
+
+	var out []models.RawPrice
+	for rows.Next() {
+		var p models.RawPrice
+		if err := rows.Scan(&p.Symbol, &p.PriceDate, &p.Close, &p.Currency, &p.Source, &p.IngestedAt); err != nil {
+			return nil, fmt.Errorf("scan price: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetLatestPrice returns the most recent close price for a symbol.
+func (r *PricesRepo) GetLatestPrice(ctx context.Context, symbol string) (float64, error) {
+	var close float64
+	err := r.db.QueryRow(ctx,
+		`SELECT close FROM raw_prices WHERE symbol = $1 ORDER BY price_date DESC LIMIT 1`,
+		symbol).Scan(&close)
+	if err != nil {
+		return 0, fmt.Errorf("get latest price for %s: %w", symbol, err)
+	}
+	return close, nil
+}
+
 func (r *PricesRepo) UpsertReturns(ctx context.Context, returns []models.ProcessedReturn) (int, error) {
 	if len(returns) == 0 {
 		return 0, nil

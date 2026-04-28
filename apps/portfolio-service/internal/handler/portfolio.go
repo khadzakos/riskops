@@ -92,10 +92,11 @@ func (h *PortfolioHandler) UpsertPosition(ctx context.Context, req api.UpsertPos
 		weight = *req.Body.Weight
 	}
 
-	// Validate: either quantity+price or explicit weight must be provided
-	if quantity <= 0 && price <= 0 && weight <= 0 {
+	// Validate: quantity must be provided (price is optional — will be auto-fetched from market data).
+	// Explicit weight-only mode is also accepted for legacy compatibility.
+	if quantity <= 0 && weight <= 0 {
 		return api.UpsertPosition400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse{
-			Error: "provide quantity and price (recommended) or an explicit weight",
+			Error: "provide quantity (price is optional and will be auto-fetched) or an explicit weight",
 		}}, nil
 	}
 
@@ -153,13 +154,15 @@ func toAPIPortfolio(p models.Portfolio) api.Portfolio {
 }
 
 func toAPIPosition(p models.Position) api.Position {
+	cp := p.CurrentPrice
 	return api.Position{
-		PortfolioId: p.PortfolioID,
-		Symbol:      p.Symbol,
-		Weight:      p.Weight,
-		Quantity:    p.Quantity,
-		Price:       p.Price,
-		UpdatedAt:   p.UpdatedAt,
+		PortfolioId:  p.PortfolioID,
+		Symbol:       p.Symbol,
+		Weight:       p.Weight,
+		Quantity:     p.Quantity,
+		Price:        p.Price,
+		CurrentPrice: &cp,
+		UpdatedAt:    p.UpdatedAt,
 	}
 }
 

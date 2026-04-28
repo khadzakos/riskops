@@ -1,5 +1,18 @@
 services:
-  # ── Infrastructure (always needed) ───────────────────────────
+  db-migrate:
+    profiles: [all, infra, apps, airflow]
+    image: migrate/migrate:v4
+    volumes:
+      - ./infra/db/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://riskops:riskops@db:5432/riskops?sslmode=disable"
+      - "up"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   db:
     profiles: [all, infra]
     image: postgres:16-alpine
@@ -11,7 +24,6 @@ services:
       - "6432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s

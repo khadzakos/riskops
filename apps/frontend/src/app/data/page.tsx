@@ -95,10 +95,24 @@ export default function DataPage() {
     return true;
   });
 
-  const logSources = Array.from(new Set(logs.map((l) => l.source)));
+  const logSources = Array.from(new Set(logs.map((l) => l.source))).sort();
   const successCount = logs.filter((l) => l.status === 'completed').length;
   const failCount = logs.filter((l) => l.status === 'failed').length;
   const totalRows = logs.reduce((s, l) => s + (l.rows_ingested ?? 0), 0);
+
+  // Per-source stats
+  const sourceStats = logSources.map((src) => {
+    const srcLogs = logs.filter((l) => l.source === src);
+    return {
+      source: src,
+      total: srcLogs.length,
+      success: srcLogs.filter((l) => l.status === 'completed').length,
+      failed: srcLogs.filter((l) => l.status === 'failed').length,
+      rows: srcLogs.reduce((s, l) => s + (l.rows_ingested ?? 0), 0),
+      lastAt: srcLogs.length > 0 ? srcLogs[0].created_at : null,
+      lastStatus: srcLogs.length > 0 ? srcLogs[0].status : null,
+    };
+  });
 
   const statusVariant = (s: string): 'good' | 'crit' | '' => {
     if (s === 'completed') return 'good';
@@ -140,6 +154,53 @@ export default function DataPage() {
             </div>
           ))}
         </div>
+
+        {/* Per-source stats */}
+        {!loading && sourceStats.length > 0 && (
+          <div className="card" style={{ marginBottom: 20 }}>
+            <div className="card-head">
+              <div className="card-title">Статистика по источникам</div>
+            </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Источник</th>
+                  <th style={{ textAlign: 'right' }}>Всего</th>
+                  <th style={{ textAlign: 'right' }}>Успешно</th>
+                  <th style={{ textAlign: 'right' }}>Ошибок</th>
+                  <th style={{ textAlign: 'right' }}>Строк загружено</th>
+                  <th>Последняя загрузка</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sourceStats.map((s) => (
+                  <tr key={s.source}>
+                    <td className="mono">{s.source}</td>
+                    <td style={{ textAlign: 'right' }} className="mono">{s.total}</td>
+                    <td style={{ textAlign: 'right', color: s.success > 0 ? 'var(--good)' : undefined }} className="mono">
+                      {s.success}
+                    </td>
+                    <td style={{ textAlign: 'right', color: s.failed > 0 ? 'var(--crit)' : undefined }} className="mono">
+                      {s.failed > 0 ? s.failed : '—'}
+                    </td>
+                    <td style={{ textAlign: 'right' }} className="mono">{s.rows.toLocaleString()}</td>
+                    <td style={{ fontSize: 11, color: 'var(--ink-4)' }}>
+                      {s.lastAt ? s.lastAt.slice(0, 16).replace('T', ' ') : '—'}
+                    </td>
+                    <td>
+                      {s.lastStatus ? (
+                        <Pill variant={statusVariant(s.lastStatus)}>
+                          {s.lastStatus === 'completed' ? 'OK' : s.lastStatus}
+                        </Pill>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {/* Data sources */}
         {sources.length > 0 && (

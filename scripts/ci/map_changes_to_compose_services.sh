@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Maps changed file paths (one per line) to docker compose service names for this repo.
 # Prints a single space-separated line, or ALL_APPS, or nothing (no known app paths).
+#
+# Rules:
+#   - Any app service change also triggers frontend rebuild (frontend depends on gateway
+#     which depends on all backend services).
+#   - docker-compose.yaml change → ALL_APPS (rebuild everything).
+#   - Migrations (infra/db/*) → run db-migrate only (no service rebuild needed).
 set -euo pipefail
 
 file="${1:-}"
@@ -22,6 +28,7 @@ add_go_stack() {
   add gateway
   add portfolio-service
   add market-data-service
+  add frontend
 }
 
 add_airflow_stack() {
@@ -44,18 +51,23 @@ while IFS= read -r f || [[ -n "${f}" ]]; do
       ;;
     apps/gateway/*|apps/gateway)
       add gateway
+      add frontend
       ;;
     apps/portfolio-service/*|apps/portfolio-service)
       add portfolio-service
+      add frontend
       ;;
     apps/market-data-service/*|apps/market-data-service)
       add market-data-service
+      add frontend
       ;;
     apps/training-service/*|apps/training-service)
       add training-service
+      add frontend
       ;;
     apps/inference-service/*|apps/inference-service)
       add inference-service
+      add frontend
       ;;
     apps/frontend/*|apps/frontend)
       add frontend
@@ -74,7 +86,7 @@ while IFS= read -r f || [[ -n "${f}" ]]; do
       add grafana
       ;;
     infra/db/*)
-      add db
+      add db-migrate
       ;;
     infra/caddy/*|infra/caddy)
       add caddy

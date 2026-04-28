@@ -540,12 +540,21 @@ export default function PortfolioPage() {
   }, [selectedId, loadData]);
 
   const handleAddPosition = async () => {
-    if (!selectedId || !newSymbol || !newQuantity || !newPrice) return;
+    if (!selectedId || !newSymbol || !newQuantity) return;
     const qty = parseFloat(newQuantity);
-    const prc = parseFloat(newPrice);
-    if (isNaN(qty) || qty <= 0 || isNaN(prc) || prc <= 0) {
-      setSaveMsg('Ошибка: количество и цена должны быть положительными числами');
+    if (isNaN(qty) || qty <= 0) {
+      setSaveMsg('Ошибка: количество должно быть положительным числом');
       return;
+    }
+    // Price is optional — if provided, validate it; if empty, backend auto-fetches market price
+    let prc: number | undefined;
+    if (newPrice.trim() !== '') {
+      const parsed = parseFloat(newPrice);
+      if (isNaN(parsed) || parsed <= 0) {
+        setSaveMsg('Ошибка: цена должна быть положительным числом');
+        return;
+      }
+      prc = parsed;
     }
     setSaving(true);
     setSaveMsg(null);
@@ -553,9 +562,10 @@ export default function PortfolioPage() {
       await portfolioApi.upsertPosition(selectedId, {
         symbol: newSymbol.toUpperCase(),
         quantity: qty,
-        price: prc,
+        ...(prc !== undefined ? { price: prc } : {}),
       });
-      setSaveMsg(`Позиция ${newSymbol.toUpperCase()} сохранена (${qty} шт. × $${prc.toFixed(2)})`);
+      const priceLabel = prc !== undefined ? ` × $${prc.toFixed(2)}` : ' (цена — рыночная)';
+      setSaveMsg(`Позиция ${newSymbol.toUpperCase()} сохранена (${qty} шт.${priceLabel})`);
       setNewSymbol('');
       setNewQuantity('');
       setNewPrice('');
@@ -621,6 +631,26 @@ export default function PortfolioPage() {
   }));
 
   const totalWeight = positions.reduce((s, p) => s + p.weight, 0);
+
+  // ── Portfolio value tracking ───────────────────────────────────────────────
+  // initialValue: sum of (quantity × purchase price) for all positions
+  // currentValue: sum of (quantity × current_price) for positions that have market data
+  const initialValue = positions.reduce((s, p) => {
+    if (p.quantity > 0 && p.price > 0) return s + p.quantity * p.price;
+    return s;
+  }, 0);
+
+  const currentValue = positions.reduce((s, p) => {
+    const mktPrice = p.current_price ?? 0;
+    if (p.quantity > 0 && mktPrice > 0) return s + p.quantity * mktPrice;
+    // Fall back to purchase price if no market data available
+    if (p.quantity > 0 && p.price > 0) return s + p.quantity * p.price;
+    return s;
+  }, 0);
+
+  const valueChange = currentValue - initialValue;
+  const valueChangePct = initialValue > 0 ? (valueChange / initialValue) * 100 : 0;
+  const hasMarketPrices = positions.some((p) => (p.current_price ?? 0) > 0);
 
   const kpis = [
     { label: 'VaR (95%)', value: varVal !== null ? `${(varVal * 100).toFixed(2)}%` : null, color: 'var(--primary)' },
@@ -738,6 +768,82 @@ export default function PortfolioPage() {
           </div>
         )}
 
+        {/* ── Portfolio value tracking ──────────────────────────────── */}
+        {selectedId !== null && positions.length > 0 && (
+          <div className="card" style={{ marginTop: 8 }}>
+            <div className="card-head">
+              <div className="card-title">Стоимость портфеля</div>
+              {!hasMarketPrices && (
+                <span style={{ fontSize: 10, color: 'var(--ink-4)' }}>нет рыночных цен</span>
+              )}
+            </div>
+            {dataLoading ? (
+              <Skeleton height={56} />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16 }}>
+                {/* Initial value */}
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                    Начальная стоимость
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-1)' }}>
+                    {initialValue > 0
+                      ? `$${initialValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 2 }}>кол-во × цена покупки</div>
+                </div>
+
+                {/* Current value */}
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                    Текущая стоимость
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-1)' }}>
+                    {currentValue > 0
+                      ? `$${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 2 }}>кол-во × рыночная цена</div>
+                </div>
+
+                {/* Absolute change */}
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                    Изменение
+                  </div>
+                  <div style={{
+                    fontSize: 20,
+                    fontWeight: 700,
+                    fontVariantNumeric: 'tabular-nums',
+                    color: initialValue > 0
+                      ? (valueChange > 0 ? 'var(--good)' : valueChange < 0 ? 'var(--crit)' : 'var(--ink-3)')
+                      : 'var(--ink-4)',
+                  }}>
+                    {initialValue > 0 ? (
+                      <>
+                        {valueChange >= 0 ? '+' : ''}
+                        {`$${valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 10, marginTop: 2, fontVariantNumeric: 'tabular-nums',
+                    color: initialValue > 0
+                      ? (valueChange > 0 ? 'var(--good)' : valueChange < 0 ? 'var(--crit)' : 'var(--ink-3)')
+                      : 'var(--ink-4)',
+                  }}>
+                    {initialValue > 0
+                      ? `${valueChangePct >= 0 ? '+' : ''}${valueChangePct.toFixed(2)}%`
+                      : ''}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ── Positions table + Donut ────────────────────────────────── */}
         {selectedId !== null && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'start', marginTop: 8 }}>
@@ -769,25 +875,25 @@ export default function PortfolioPage() {
                 />
                 <input
                   className="input"
-                  placeholder="Цена ($182.50)"
+                  placeholder="Цена (необяз.)"
                   type="number"
                   step="0.01"
                   min="0.0001"
                   value={newPrice}
                   onChange={(e) => setNewPrice(e.target.value)}
-                  style={{ width: 120 }}
+                  style={{ width: 130 }}
                 />
                 <button
                   className="btn-primary"
                   onClick={handleAddPosition}
-                  disabled={saving || !newSymbol || !newQuantity || !newPrice}
+                  disabled={saving || !newSymbol || !newQuantity}
                   style={{ fontSize: 12 }}
                 >
                   {saving ? '…' : '+ Добавить'}
                 </button>
               </div>
               <div style={{ fontSize: 10, color: 'var(--ink-4)', marginBottom: 8 }}>
-                Вес рассчитывается автоматически: кол-во × цена / сумма всех позиций
+                Вес = кол-во × цена / сумма всех позиций. Цена необязательна — подставляется рыночная.
               </div>
 
               {dataLoading ? (
@@ -800,15 +906,28 @@ export default function PortfolioPage() {
                     <tr style={{ borderBottom: '1px solid var(--hair)' }}>
                       <th style={{ textAlign: 'left', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Тикер</th>
                       <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Кол-во</th>
-                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Цена</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Цена покупки</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Тек. цена</th>
                       <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Стоимость</th>
+                      <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>P&amp;L</th>
                       <th style={{ textAlign: 'right', padding: '4px 8px', color: 'var(--ink-3)', fontWeight: 500, fontSize: 11 }}>Доля</th>
                       <th style={{ width: 32 }} />
                     </tr>
                   </thead>
                   <tbody>
                     {positions.map((p, i) => {
-                      const posValue = p.quantity > 0 && p.price > 0 ? p.quantity * p.price : null;
+                      const mktPrice = p.current_price ?? 0;
+                      // Current value uses market price if available, else purchase price
+                      const effectivePrice = mktPrice > 0 ? mktPrice : p.price;
+                      const posCurrentValue = p.quantity > 0 && effectivePrice > 0 ? p.quantity * effectivePrice : null;
+                      const posInitialValue = p.quantity > 0 && p.price > 0 ? p.quantity * p.price : null;
+                      const posPnl = posCurrentValue !== null && posInitialValue !== null && mktPrice > 0
+                        ? posCurrentValue - posInitialValue
+                        : null;
+                      const posPnlPct = posPnl !== null && posInitialValue !== null && posInitialValue > 0
+                        ? (posPnl / posInitialValue) * 100
+                        : null;
+                      const pnlColor = posPnl === null ? 'var(--ink-4)' : posPnl > 0 ? 'var(--good)' : posPnl < 0 ? 'var(--crit)' : 'var(--ink-3)';
                       return (
                         <tr key={p.symbol} style={{ borderBottom: '1px solid var(--hair)' }}>
                           <td style={{ padding: '6px 8px' }}>
@@ -823,8 +942,21 @@ export default function PortfolioPage() {
                           <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: 'var(--ink-2)' }}>
                             {p.price > 0 ? `$${p.price.toFixed(2)}` : '—'}
                           </td>
+                          <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: mktPrice > 0 ? 'var(--ink-1)' : 'var(--ink-4)' }}>
+                            {mktPrice > 0 ? `$${mktPrice.toFixed(2)}` : '—'}
+                          </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
-                            {posValue !== null ? `$${posValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}` : '—'}
+                            {posCurrentValue !== null ? `$${posCurrentValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}` : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: pnlColor, fontSize: 12 }}>
+                            {posPnl !== null ? (
+                              <>
+                                <div>{posPnl >= 0 ? '+' : ''}{posPnl.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                {posPnlPct !== null && (
+                                  <div style={{ fontSize: 10 }}>{posPnlPct >= 0 ? '+' : ''}{posPnlPct.toFixed(2)}%</div>
+                                )}
+                              </>
+                            ) : '—'}
                           </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums' }}>
                             {(p.weight * 100).toFixed(1)}%
@@ -843,15 +975,22 @@ export default function PortfolioPage() {
                     })}
                   </tbody>
                   <tfoot>
-                    <tr>
+                    <tr style={{ borderTop: '1px solid var(--hair-strong)' }}>
                       <td style={{ padding: '6px 8px', fontSize: 11, color: 'var(--ink-3)' }}>Итого</td>
                       <td />
                       <td />
+                      <td />
                       <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-                        {(() => {
-                          const total = positions.reduce((s, p) => s + (p.quantity > 0 && p.price > 0 ? p.quantity * p.price : 0), 0);
-                          return total > 0 ? `$${total.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}` : '—';
-                        })()}
+                        {currentValue > 0 ? `$${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                        color: valueChange > 0 ? 'var(--good)' : valueChange < 0 ? 'var(--crit)' : 'var(--ink-3)' }}>
+                        {initialValue > 0 && hasMarketPrices ? (
+                          <>
+                            <div>{valueChange >= 0 ? '+' : ''}{valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div style={{ fontSize: 10, fontWeight: 400 }}>{valueChangePct >= 0 ? '+' : ''}{valueChangePct.toFixed(2)}%</div>
+                          </>
+                        ) : '—'}
                       </td>
                       <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)', fontVariantNumeric: 'tabular-nums' }}>
                         {(totalWeight * 100).toFixed(1)}%

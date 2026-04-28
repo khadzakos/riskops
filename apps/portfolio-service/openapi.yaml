@@ -267,7 +267,11 @@ components:
         price:
           type: number
           format: double
-          description: Price per share at time of entry (used to compute weight)
+          description: Purchase price per share (used to compute weight). Auto-filled from market data if not provided.
+        current_price:
+          type: number
+          format: double
+          description: Latest market price per share (from raw_prices). 0 if no market data available.
         updated_at:
           type: string
           format: date-time

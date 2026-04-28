@@ -12,12 +12,13 @@ type Portfolio struct {
 }
 
 type Position struct {
-	PortfolioID int64     `json:"portfolio_id"`
-	Symbol      string    `json:"symbol"`
-	Weight      float64   `json:"weight"`
-	Quantity    float64   `json:"quantity"`
-	Price       float64   `json:"price"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	PortfolioID  int64     `json:"portfolio_id"`
+	Symbol       string    `json:"symbol"`
+	Weight       float64   `json:"weight"`
+	Quantity     float64   `json:"quantity"`
+	Price        float64   `json:"price"`         // purchase price (used for weight calculation)
+	CurrentPrice float64   `json:"current_price"` // latest market price (0 if unavailable)
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type RiskResult struct {

@@ -90,17 +90,9 @@ func (h *PriceChartHandler) HandlePriceChart(w http.ResponseWriter, r *http.Requ
 		normalized = false
 	}
 
-	// Fetch raw prices for all symbols
-	prices, err := h.pricesRepo.GetPrices(r.Context(), symbols, dateFrom, dateTo, "", 50000)
-	if err != nil {
-		h.log.Error("price chart: get prices failed", zap.Error(err))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-
-	// Group prices by symbol, sorted by date ascending
+	// Fetch raw prices per symbol individually to avoid cross-symbol LIMIT truncation.
+	// Each symbol gets its own query with no artificial cap, ensuring all date points
+	// are returned regardless of how many symbols are in the portfolio.
 	type priceEntry struct {
 		date     string
 		close    float64
@@ -111,29 +103,30 @@ func (h *PriceChartHandler) HandlePriceChart(w http.ResponseWriter, r *http.Requ
 	currencyBySymbol := make(map[string]string)
 	sourceBySymbol := make(map[string]string)
 
-	for _, p := range prices {
-		dateStr := p.PriceDate.Format("2006-01-02")
-		bySymbol[p.Symbol] = append(bySymbol[p.Symbol], priceEntry{
-			date:     dateStr,
-			close:    p.Close,
-			currency: p.Currency,
-			source:   p.Source,
-		})
-		currencyBySymbol[p.Symbol] = p.Currency
-		sourceBySymbol[p.Symbol] = p.Source
-	}
-
-	// Sort each symbol's entries by date (they come DESC from DB, reverse to ASC)
-	for sym := range bySymbol {
-		entries := bySymbol[sym]
-		// Reverse to get ascending order
-		for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
-			entries[i], entries[j] = entries[j], entries[i]
+	for _, sym := range symbols {
+		// Fetch per-symbol with a generous per-symbol limit (10 years × 260 trading days)
+		symPrices, err := h.pricesRepo.GetPricesAsc(r.Context(), []string{sym}, dateFrom, dateTo, "", 3000)
+		if err != nil {
+			h.log.Error("price chart: get prices failed", zap.String("symbol", sym), zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
 		}
-		bySymbol[sym] = entries
+		for _, p := range symPrices {
+			dateStr := p.PriceDate.Format("2006-01-02")
+			bySymbol[p.Symbol] = append(bySymbol[p.Symbol], priceEntry{
+				date:     dateStr,
+				close:    p.Close,
+				currency: p.Currency,
+				source:   p.Source,
+			})
+			currencyBySymbol[p.Symbol] = p.Currency
+			sourceBySymbol[p.Symbol] = p.Source
+		}
 	}
 
-	// Build series
+	// Build series — data already comes ASC from GetPricesAsc
 	var series []AssetPriceSeries
 	for _, sym := range symbols {
 		entries, ok := bySymbol[sym]
@@ -142,6 +135,20 @@ func (h *PriceChartHandler) HandlePriceChart(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 
+		// Deduplicate by date — keep the last entry per date to avoid spikes from
+		// duplicate ingestion records (e.g. same date ingested from multiple sources).
+		seen := make(map[string]int, len(entries))
+		deduped := make([]priceEntry, 0, len(entries))
+		for _, e := range entries {
+			if idx, exists := seen[e.date]; exists {
+				deduped[idx] = e // overwrite with latest
+			} else {
+				seen[e.date] = len(deduped)
+				deduped = append(deduped, e)
+			}
+		}
+		entries = deduped
+
 		points := make([]PricePoint, 0, len(entries))
 		basePrice := entries[0].close
 		if basePrice == 0 {
@@ -149,6 +156,10 @@ func (h *PriceChartHandler) HandlePriceChart(w http.ResponseWriter, r *http.Requ
 		}
 
 		for _, e := range entries {
+			if e.close <= 0 {
+				// Skip zero/negative prices — they are data artifacts
+				continue
+			}
 			var normValue float64
 			if normalized {
 				normValue = (e.close / basePrice) * 100.0

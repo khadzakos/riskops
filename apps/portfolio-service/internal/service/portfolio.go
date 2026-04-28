@@ -54,6 +54,18 @@ func (s *PortfolioService) ListPositions(ctx context.Context, portfolioID int64)
 }
 
 func (s *PortfolioService) UpsertPosition(ctx context.Context, portfolioID int64, symbol string, quantity, price, weight float64) (*models.Position, error) {
+	if quantity > 0 && price <= 0 {
+		marketPrice, err := s.repo.GetLatestMarketPrice(ctx, symbol)
+		if err != nil {
+			s.log.Warn("could not fetch market price, using 0",
+				zap.String("symbol", symbol), zap.Error(err))
+		} else if marketPrice > 0 {
+			price = marketPrice
+			s.log.Info("auto-fetched market price for position",
+				zap.String("symbol", symbol), zap.Float64("price", price))
+		}
+	}
+
 	pos, err := s.repo.UpsertPosition(ctx, portfolioID, symbol, quantity, price, weight)
 	if err != nil {
 		return nil, err

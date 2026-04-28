@@ -1,4 +1,4 @@
--- Migration 003: stress test results table + bulk ingestion tracking
+-- Migration 004: stress test results table + bulk ingestion tracking
 
 -- Stress test results persistence
 CREATE TABLE IF NOT EXISTS stress_test_results (

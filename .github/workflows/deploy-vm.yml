@@ -53,8 +53,7 @@ jobs:
     needs: compute-services
     runs-on: ubuntu-latest
     steps:
-      # Всегда подтягиваем main на ВМ; docker-compose --build только если маппинг вернул сервисы.
-      - name: Sync repo on VM (redeploy services only if mapped)
+      - name: Sync repo, run migrations, redeploy changed services
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_SERVICES: ${{ needs.compute-services.outputs.services }}
@@ -68,23 +67,30 @@ jobs:
             set -euo pipefail
             SERVICES="${DEPLOY_SERVICES:-}"
             cd "${{ secrets.VM_DEPLOY_PATH }}"
+
             git fetch origin main
             git checkout main
             git pull --ff-only origin main
+
+            # Always run migrations after pulling latest code
+            docker compose run --rm -T db-migrate
+
             if [ -z "${SERVICES}" ]; then
-              echo "No mapped compose services; git sync done, skipping docker-compose --build."
+              echo "No mapped compose services; git sync + migrations done."
               exit 0
             fi
+
             if [ "${SERVICES}" = "ALL_APPS" ]; then
               docker compose --profile apps --profile airflow --profile observability up -d --build
               exit 0
             fi
+
             PROFILES="--profile apps"
-            case "${SERVICES}" in
-              *prometheus*|*grafana*) PROFILES="${PROFILES} --profile observability" ;;
-            esac
-            case "${SERVICES}" in
-              *airflow*) PROFILES="${PROFILES} --profile airflow" ;;
-            esac
-            # shellcheck disable=SC2086
+            if echo "${SERVICES}" | grep -qE "prometheus|grafana"; then
+              PROFILES="${PROFILES} --profile observability"
+            fi
+            if echo "${SERVICES}" | grep -q "airflow"; then
+              PROFILES="${PROFILES} --profile airflow"
+            fi
+
             docker compose ${PROFILES} up -d --build ${SERVICES}

@@ -75,4 +75,3 @@ WHERE p.name = 'demo'
 ON CONFLICT (portfolio_id, symbol) DO UPDATE SET
   weight = EXCLUDED.weight,
   updated_at = NOW();
-

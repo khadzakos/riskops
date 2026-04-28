@@ -1,4 +1,4 @@
--- Migration 005: FRED (Federal Reserve Economic Data) series catalogue
+-- Migration 006: FRED (Federal Reserve Economic Data) series catalogue
 -- Stores metadata for financially significant FRED series.
 -- Actual time-series data is stored in raw_prices with source='fred'
 -- and processed_returns for return-based series.

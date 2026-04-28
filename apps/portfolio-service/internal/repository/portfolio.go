@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/khadzakos/riskops/pkg/models"
 )
@@ -74,9 +76,20 @@ func (r *PortfolioRepo) Delete(ctx context.Context, id int64) error {
 // Positions
 
 func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([]models.Position, error) {
+	// Join with raw_prices to get the latest market price for each symbol.
+	// DISTINCT ON (pp.symbol) with ORDER BY price_date DESC picks the most recent price.
 	rows, err := r.db.Query(ctx,
-		`SELECT portfolio_id, symbol, weight, quantity, price, updated_at
-		 FROM portfolio_positions WHERE portfolio_id = $1 ORDER BY symbol`, portfolioID)
+		`SELECT pp.portfolio_id, pp.symbol, pp.weight, pp.quantity, pp.price, pp.updated_at,
+		        COALESCE(rp.close, 0) AS current_price
+		 FROM portfolio_positions pp
+		 LEFT JOIN LATERAL (
+		     SELECT close FROM raw_prices
+		     WHERE symbol = pp.symbol
+		     ORDER BY price_date DESC
+		     LIMIT 1
+		 ) rp ON true
+		 WHERE pp.portfolio_id = $1
+		 ORDER BY pp.symbol`, portfolioID)
 	if err != nil {
 		return nil, fmt.Errorf("list positions: %w", err)
 	}
@@ -85,12 +98,28 @@ func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([
 	var out []models.Position
 	for rows.Next() {
 		var p models.Position
-		if err := rows.Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt, &p.CurrentPrice); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// GetLatestMarketPrice returns the most recent close price for a symbol from raw_prices.
+// Returns 0 and no error if no price data is available.
+func (r *PortfolioRepo) GetLatestMarketPrice(ctx context.Context, symbol string) (float64, error) {
+	var close float64
+	err := r.db.QueryRow(ctx,
+		`SELECT close FROM raw_prices WHERE symbol = $1 ORDER BY price_date DESC LIMIT 1`,
+		symbol).Scan(&close)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("get latest market price for %s: %w", symbol, err)
+	}
+	return close, nil
 }
 
 // UpsertPosition inserts or updates a position.
@@ -127,13 +156,21 @@ func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, s
 		}
 	}
 
-	// Return the updated position
+	// Return the updated position with current market price
 	var p models.Position
 	err = r.db.QueryRow(ctx,
-		`SELECT portfolio_id, symbol, weight, quantity, price, updated_at
-		 FROM portfolio_positions WHERE portfolio_id = $1 AND symbol = $2`,
+		`SELECT pp.portfolio_id, pp.symbol, pp.weight, pp.quantity, pp.price, pp.updated_at,
+		        COALESCE(rp.close, 0) AS current_price
+		 FROM portfolio_positions pp
+		 LEFT JOIN LATERAL (
+		     SELECT close FROM raw_prices
+		     WHERE symbol = pp.symbol
+		     ORDER BY price_date DESC
+		     LIMIT 1
+		 ) rp ON true
+		 WHERE pp.portfolio_id = $1 AND pp.symbol = $2`,
 		portfolioID, symbol).
-		Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt)
+		Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt, &p.CurrentPrice)
 	if err != nil {
 		return nil, fmt.Errorf("fetch upserted position: %w", err)
 	}
@@ -168,6 +205,10 @@ func (r *PortfolioRepo) DeletePosition(ctx context.Context, portfolioID int64, s
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("position %s not found in portfolio %d", symbol, portfolioID)
+	}
+	// Re-normalize remaining positions so weights still sum to 1.0
+	if err := r.renormalizeWeights(ctx, portfolioID); err != nil {
+		return fmt.Errorf("renormalize after delete: %w", err)
 	}
 	return nil
 }

@@ -33,7 +33,8 @@ export interface Position {
   symbol: string;
   weight: number;
   quantity: number;
-  price: number;
+  price: number;           // purchase price per share
+  current_price?: number;  // latest market price (0 if unavailable)
   updated_at: string;
 }
 

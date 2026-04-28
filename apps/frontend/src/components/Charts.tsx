@@ -80,8 +80,15 @@ export function LineChart({
   const innerW = w - padL - padR;
   const innerH = h - padT - padB;
 
+  // Build a unified sorted X-axis from ALL series (union of all dates/values).
+  // This ensures every series is plotted against the same X positions regardless
+  // of whether individual series have different date coverage.
+  const xSet = new Set<string>();
+  series.forEach((s) => s.data.forEach((d) => xSet.add(String(d.x))));
+  const allX = Array.from(xSet).sort();
+  const xIndexMap = new Map<string, number>(allX.map((x, i) => [x, i]));
+
   const allY = series.flatMap((s) => s.data.map((d) => d.y));
-  const allX = series[0].data.map((d) => d.x);
   let yMin = Math.min(...allY), yMax = Math.max(...allY);
   const yPad = (yMax - yMin) * 0.08 || 1;
   yMin -= yPad; yMax += yPad;
@@ -107,7 +114,31 @@ export function LineChart({
         </text>
       ))}
       {series.map((s, i) => {
-        const pts: [number, number][] = s.data.map((d, j) => [xScale(j), yScale(d.y)]);
+        // Map each data point to its correct X position in the unified axis.
+        // Only connect consecutive points that are adjacent in the unified axis
+        // to avoid drawing lines across large gaps (missing data periods).
+        const pts: [number, number][] = s.data
+          .map((d) => {
+            const xi = xIndexMap.get(String(d.x));
+            if (xi === undefined) return null;
+            return [xScale(xi), yScale(d.y)] as [number, number];
+          })
+          .filter((p): p is [number, number] => p !== null);
+
+        if (pts.length === 0) return null;
+
+        // Build path with M/L commands, inserting M (move) when there is a gap
+        // larger than 5 unified-axis steps to avoid connecting distant points.
+        const seriesXIndices = s.data
+          .map((d) => xIndexMap.get(String(d.x)))
+          .filter((xi): xi is number => xi !== undefined);
+
+        let pathD = '';
+        for (let k = 0; k < pts.length; k++) {
+          const gap = k > 0 ? seriesXIndices[k] - seriesXIndices[k - 1] : 0;
+          pathD += `${k === 0 || gap > 5 ? 'M' : 'L'}${pts[k][0].toFixed(2)},${pts[k][1].toFixed(2)} `;
+        }
+
         const dashed = dashedSeries.includes(s.name);
         return (
           <g key={s.name}>
@@ -115,7 +146,7 @@ export function LineChart({
               <path d={areaFromPoints(pts, padT + innerH)} fill={s.color} opacity="0.08" />
             )}
             <path
-              d={pathFromPoints(pts)}
+              d={pathD.trim()}
               fill="none"
               stroke={s.color}
               strokeWidth="1.6"
