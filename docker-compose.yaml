@@ -1,7 +1,7 @@
 services:
   db-migrate:
     profiles: [all, infra, apps, airflow]
-    image: migrate/migrate:v4
+    image: migrate/migrate:v4.19.1
     volumes:
       - ./infra/db/migrations:/migrations:ro
     command:

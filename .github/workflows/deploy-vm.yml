@@ -72,11 +72,15 @@ jobs:
             git checkout main
             git pull --ff-only origin main
 
+            # Always regenerate OpenAPI Go stubs so *.gen.go files match the
+            # current openapi.yaml specs before any Go service is compiled.
+            docker compose --profile tools run --rm -T oapi-gen
+
             # Always run migrations after pulling latest code
             docker compose run --rm -T db-migrate
 
             if [ -z "${SERVICES}" ]; then
-              echo "No mapped compose services; git sync + migrations done."
+              echo "No mapped compose services; git sync + codegen + migrations done."
               exit 0
             fi
 
