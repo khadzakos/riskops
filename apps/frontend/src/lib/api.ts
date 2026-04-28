@@ -187,7 +187,7 @@ export const marketDataApi = {
     return apiFetch<ProcessedReturn[]>(`/market-data/returns?${q}`);
   },
   triggerIngest: (body: {
-    source: 'yahoo' | 'moex' | 'synthetic' | 'credit_synthetic';
+    source: 'yahoo' | 'moex' | 'fred' | 'synthetic' | 'credit_synthetic';
     symbols?: string[];
     date_from?: string;
     date_to?: string;

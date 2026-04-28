@@ -43,13 +43,15 @@ func main() {
 	creditRepo := repository.NewCreditRepo(pool)
 	logRepo := repository.NewIngestionLogRepo(pool)
 
-	// Collectors registry
+	// Collectors registry.
+	// synthetic / credit_synthetic are available for manual on-demand ingest only —
+	// they are NOT triggered automatically at startup or by scheduled jobs.
 	collectors := map[string]collector.Collector{
 		"yahoo":            collector.NewYahooCollector(),
 		"moex":             collector.NewMOEXCollector(),
+		"fred":             collector.NewFREDCollector(cfg.FREDAPIKey, log),
 		"synthetic":        collector.NewSyntheticCollector(),
 		"credit_synthetic": collector.NewCreditSyntheticCollector(),
-		"fred":             collector.NewFREDCollector(cfg.FREDAPIKey, log),
 	}
 
 	// Services
@@ -59,7 +61,8 @@ func main() {
 
 	ingestSvc := service.NewIngestService(collectors, pricesRepo, creditRepo, logRepo, returnsSvc, kp, log)
 
-	// Ensure benchmark data (SPY, ^GSPC) is available for beta computation.
+	// Ensure 10 years of data for all top US+RU tickers on startup.
+	// Covers SPY/^GSPC benchmarks + full USTickerList + RUTickerList.
 	// Runs in background so it doesn't block startup.
 	go ingestSvc.EnsureBenchmarkData(ctx)
 

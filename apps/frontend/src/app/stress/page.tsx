@@ -17,9 +17,38 @@ interface ScenarioResult {
   scenarioName: string;
   scenarioType: string;
   portfolioId: number;
+  portfolioName: string;
   result: ScenarioRunResponse | null;
   error: string | null;
   loading: boolean;
+}
+
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+
+const LS_KEY = 'riskops_stress_results';
+
+function loadFromStorage(): ScenarioResult[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return [];
+    const parsed: ScenarioResult[] = JSON.parse(raw);
+    // Strip any rows that were still "loading" when the page was closed
+    return parsed.map((r) => r.loading ? { ...r, loading: false, error: 'Прервано перезагрузкой' } : r);
+  } catch {
+    return [];
+  }
+}
+
+function saveToStorage(results: ScenarioResult[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    // Don't persist rows that are still loading
+    const toSave = results.filter((r) => !r.loading);
+    localStorage.setItem(LS_KEY, JSON.stringify(toSave));
+  } catch {
+    // quota exceeded or private browsing — silently ignore
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -51,9 +80,14 @@ export default function StressPage() {
   const [customVolMultiplier, setCustomVolMultiplier] = useState(3);
   const [customCorrShock, setCustomCorrShock] = useState(0.5);
 
-  const [results, setResults] = useState<ScenarioResult[]>([]);
+  const [results, setResults] = useState<ScenarioResult[]>(loadFromStorage);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Persist results to localStorage whenever they change (skip in-flight rows)
+  useEffect(() => {
+    saveToStorage(results);
+  }, [results]);
 
   // Load portfolios
   useEffect(() => {
@@ -95,6 +129,7 @@ export default function StressPage() {
       scenarioName: scenario.name,
       scenarioType: scenario.type,
       portfolioId: selectedId,
+      portfolioName: portfolios.find((p) => p.id === selectedId)?.name ?? String(selectedId),
       result: null,
       error: null,
       loading: true,
@@ -471,6 +506,7 @@ export default function StressPage() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>Портфель</th>
                   <th>Сценарий</th>
                   <th>Тип</th>
                   <th style={{ textAlign: 'right' }}>Stressed VaR</th>
@@ -485,6 +521,7 @@ export default function StressPage() {
               <tbody>
                 {results.map((r, i) => (
                   <tr key={i}>
+                    <td style={{ fontSize: 12, color: 'var(--ink-3)' }}>{r.portfolioName}</td>
                     <td style={{ fontWeight: 500 }}>{r.scenarioName}</td>
                     <td>
                       <Pill variant={variantForType(r.scenarioType)}>

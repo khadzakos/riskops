@@ -4,8 +4,12 @@ import React, { useEffect, useState } from 'react';
 import { Topbar, PageHead, Pill, ErrorBanner, Skeleton } from '@/components/Shell';
 import { marketDataApi, type DataSource, type IngestionLog, type IngestResponse } from '@/lib/api';
 
-type IngestSource = 'yahoo' | 'moex' | 'synthetic' | 'credit_synthetic';
-const SOURCES: IngestSource[] = ['yahoo', 'moex', 'synthetic', 'credit_synthetic'];
+type IngestSource = 'yahoo' | 'moex' | 'fred' | 'synthetic' | 'credit_synthetic';
+
+// Sources that are scheduled / auto-ingested at startup
+const AUTO_SOURCES: IngestSource[] = ['yahoo', 'moex', 'fred'];
+// Sources available only via manual on-demand button
+const MANUAL_SOURCES: IngestSource[] = ['synthetic', 'credit_synthetic'];
 
 export default function DataPage() {
   const [sources, setSources] = useState<DataSource[]>([]);
@@ -186,17 +190,36 @@ export default function DataPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--ink-4)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Источник</div>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {SOURCES.map((s) => (
-                  <button
-                    key={s}
-                    className={ingestSource === s ? 'btn-primary' : 'btn-secondary'}
-                    style={{ fontSize: 12 }}
-                    onClick={() => setIngestSource(s)}
-                  >
-                    {s}
-                  </button>
-                ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Scheduled / auto-ingested sources */}
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {AUTO_SOURCES.map((s) => (
+                    <button
+                      key={s}
+                      className={ingestSource === s ? 'btn-primary' : 'btn-secondary'}
+                      style={{ fontSize: 12 }}
+                      onClick={() => setIngestSource(s)}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                {/* Manual on-demand only sources */}
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: 'var(--ink-4)', fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    только вручную:
+                  </span>
+                  {MANUAL_SOURCES.map((s) => (
+                    <button
+                      key={s}
+                      className={ingestSource === s ? 'btn-primary' : 'btn-secondary'}
+                      style={{ fontSize: 12, opacity: 0.75 }}
+                      onClick={() => setIngestSource(s)}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 

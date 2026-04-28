@@ -406,18 +406,18 @@ type BulkIngestSummary struct {
 
 func (s *IngestService) ListSources() []SourceDescriptor {
 	schedules := map[string]string{
-		"yahoo":            "Daily 21:00 UTC (Airflow)",
-		"moex":             "Daily 19:00 UTC (Airflow)",
-		"synthetic":        "On-demand",
-		"credit_synthetic": "On-demand",
-		"fred":             "Weekly (Airflow) + on startup",
+		"yahoo":            "Daily 21:00 UTC",
+		"moex":             "Daily 19:00 UTC",
+		"fred":             "Weekly + on startup",
+		"synthetic":        "On-demand only",
+		"credit_synthetic": "On-demand only",
 	}
 	descriptions := map[string]string{
 		"yahoo":            "Yahoo Finance v8 API — US/international equities, ETFs, indices",
 		"moex":             "MOEX ISS — Russian stocks, bonds, indices (TQBR board)",
-		"synthetic":        "GBM synthetic price generator for development and testing",
-		"credit_synthetic": "Synthetic credit portfolio generator (PD/LGD calibrated)",
 		"fred":             "Federal Reserve Economic Data — rates, spreads, macro indicators (DGS10, FEDFUNDS, VIX, CPI, …)",
+		"synthetic":        "GBM synthetic price generator — manual on-demand only, not auto-ingested",
+		"credit_synthetic": "Synthetic credit portfolio generator (PD/LGD calibrated) — manual on-demand only",
 	}
 
 	var out []SourceDescriptor

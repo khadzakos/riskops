@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import mlflow
@@ -45,20 +46,30 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trainer")
 # Market-data auto-ingest helper
 # ---------------------------------------------------------------------------
 
-def _trigger_market_data_ingest(symbols: list[str]) -> bool:
+def _trigger_market_data_ingest(symbols: list[str], total_needed: int = 312) -> bool:
     """POST to market-data-service to ingest historical data for *symbols*.
 
-    Calls the per-symbol ingest endpoint for each symbol, then waits up to
-    30 s for data to appear.  Returns True if the call succeeded (HTTP 2xx),
-    False on any network / timeout error.  Failures are non-fatal — the
-    caller will re-check data availability and raise 422 if still insufficient.
+    Calls the per-symbol ingest endpoint for each symbol with a date_from that
+    covers *total_needed* trading days (×1.5 calendar-day buffer for weekends /
+    holidays).  Returns True if at least one call succeeded (HTTP 2xx), False on
+    any network / timeout error.  Failures are non-fatal — the caller will
+    re-check data availability and raise 422 if still insufficient.
     """
     cfg = get_settings()
     market_data_url = getattr(cfg, "market_data_service_url", "http://market-data-service:8083")
+
+    # Convert trading days to calendar days with a 1.5× buffer (weekends + holidays)
+    calendar_days = math.ceil(total_needed * 1.5)
+    date_from = (datetime.now(tz=timezone.utc) - timedelta(days=calendar_days)).strftime("%Y-%m-%d")
+
     succeeded = False
     for symbol in symbols:
         url = f"{market_data_url}/api/market-data/ingest"
-        body = json.dumps({"source": "yahoo", "symbols": [symbol]}).encode()
+        body = json.dumps({
+            "source": "yahoo",
+            "symbols": [symbol],
+            "date_from": date_from,
+        }).encode()
         req = urllib.request.Request(
             url,
             data=body,
@@ -69,7 +80,10 @@ def _trigger_market_data_ingest(symbols: list[str]) -> bool:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 if resp.status < 300:
                     succeeded = True
-                    logger.info("Auto-ingest triggered for %s → HTTP %d", symbol, resp.status)
+                    logger.info(
+                        "Auto-ingest triggered for %s (date_from=%s) → HTTP %d",
+                        symbol, date_from, resp.status,
+                    )
         except Exception as exc:
             logger.warning("Auto-ingest request failed for %s: %s", symbol, exc)
     # Give the ingest pipeline a moment to write rows before we re-query
@@ -489,7 +503,7 @@ async def run_backtest(body: BacktestRequestBody) -> BacktestResponse:
             "Insufficient data for backtest (%d < %d). Triggering auto-ingest for %s.",
             len(port_rets), total_needed, body.symbols,
         )
-        _trigger_market_data_ingest(body.symbols)
+        _trigger_market_data_ingest(body.symbols, total_needed=total_needed)
 
         # Reload after ingest
         try:
