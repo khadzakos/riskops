@@ -353,7 +353,7 @@ services:
   # One-shot OpenAPI → Go (api.gen.go). Usage: docker compose --profile tools run --rm oapi-gen
   oapi-gen:
     profiles: [tools]
-    image: golang:1.24-bookworm
+    image: golang:1.25-bookworm
     working_dir: /work
     volumes:
       - .:/work

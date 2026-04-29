@@ -22,10 +22,12 @@ const NAV = [
 export function Sidebar() {
   const pathname = usePathname();
 
+  const isAbout = pathname === '/about';
+
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div>
+        <div style={{ width: '100%' }}>
           <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
             <div className="brand-name">RiskOps</div>
           </Link>
@@ -41,6 +43,29 @@ export function Sidebar() {
               Nikolay Khadzakos
             </a>
           </div>
+          <Link
+            href="/about"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              marginTop: 10,
+              fontSize: 11,
+              fontFamily: 'var(--mono)',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase' as const,
+              textDecoration: 'none',
+              color: isAbout ? 'var(--primary)' : 'var(--ink-4)',
+              fontWeight: isAbout ? 600 : 400,
+              transition: 'color 120ms',
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M8 7v5M8 5.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            О проекте
+          </Link>
         </div>
       </div>
 

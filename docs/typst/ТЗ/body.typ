@@ -1,3 +1,4 @@
+#import "@preview/cetz:0.3.4": canvas, draw
 #let column_names = [My *content*]
 = ВВЕДЕНИЕ
 == Наименование программы
@@ -80,55 +81,105 @@
 
 === Схема информационных потоков
 
-```
-Yahoo Finance / MOEX ISS / Synthetic
-            │
-            ▼
-   Market Data Service (Go) ─── Kafka: market.data.ingested ──┐
-            │                                                 │
-            ▼                                                 ▼
-        PostgreSQL                                  Training Service (Python)
-   (raw_prices, processed_returns)                  ─ MLflow / MinIO
-                                                    ─ Kafka: model.trained ─┐
-                                                                            │
-                                                                            ▼
-   Portfolio Service (Go) ── Kafka: portfolio.updated ──► Inference Service (Python)
-            │                                                       │
-            ▼                                                       ▼
-        PostgreSQL                                              PostgreSQL
-   (portfolios, portfolio_positions)                         (risk_results)
-            │                                                       │
-            └──────────────► API Gateway (Go) ◄─────────────────────┘
-                                    │
-                                    ▼
-                          Frontend (Next.js)
-```
+#figure(
+  canvas(length: 1cm, {
+    import draw: *
+
+    // ── helpers ──────────────────────────────────────────────────────────
+    let box(pos, w, h, label, fill: rgb("#e8f0fe"), stroke: 0.5pt) = {
+      rect(
+        (pos.at(0) - w/2, pos.at(1) - h/2),
+        (pos.at(0) + w/2, pos.at(1) + h/2),
+        fill: fill, stroke: stroke, radius: 0.15,
+      )
+      content(pos, text(7pt)[#label])
+    }
+    let arr(a, b) = line(a, b, mark: (end: ">"), stroke: 0.5pt)
+    let kafka(a, b, label) = {
+      line(a, b, stroke: (paint: rgb("#e67e22"), thickness: 0.5pt, dash: "dashed"),
+           mark: (end: ">"))
+      let mx = (a.at(0) + b.at(0)) / 2
+      let my = (a.at(1) + b.at(1)) / 2
+      content((mx, my + 0.25), text(5.5pt, fill: rgb("#e67e22"))[#label])
+    }
+
+    // ── nodes ─────────────────────────────────────────────────────────────
+    // Row 0 — external sources (top)
+    box((7.5, 11.5), 5.5, 0.7, [Yahoo Finance / MOEX ISS / FRED / Synthetic],
+        fill: rgb("#f5f5f5"))
+
+    // Row 1 — Market Data Service + its DB
+    box((3.5, 9.5), 4.2, 0.8, [Market Data Service (Go)], fill: rgb("#d0e8ff"))
+    box((3.5, 7.8), 4.2, 0.8,
+        [PostgreSQL\ #text(5.5pt)[raw\_prices, processed\_returns]],
+        fill: rgb("#fff3cd"))
+
+    // Row 2 — Training Service (right column)
+    box((11.5, 9.5), 4.2, 0.8, [Training Service (Python)], fill: rgb("#d0e8ff"))
+    box((11.5, 7.8), 4.2, 0.8,
+        [MLflow + MinIO\ #text(5.5pt)[артефакты моделей]],
+        fill: rgb("#fff3cd"))
+
+    // Row 3 — Portfolio Service + Inference Service
+    box((3.5, 5.5), 4.2, 0.8, [Portfolio Service (Go)], fill: rgb("#d0e8ff"))
+    box((11.5, 5.5), 4.2, 0.8, [Inference Service (Python)], fill: rgb("#d0e8ff"))
+
+    // Row 4 — their DBs
+    box((3.5, 3.8), 4.2, 0.8,
+        [PostgreSQL\ #text(5.5pt)[portfolios, portfolio\_positions]],
+        fill: rgb("#fff3cd"))
+    box((11.5, 3.8), 4.2, 0.8,
+        [PostgreSQL\ #text(5.5pt)[risk\_results]],
+        fill: rgb("#fff3cd"))
+
+    // Row 5 — API Gateway
+    box((7.5, 2.0), 4.2, 0.8, [API Gateway (Go)], fill: rgb("#d0e8ff"))
+
+    // Row 6 — Frontend
+    box((7.5, 0.3), 4.2, 0.8, [Frontend (Next.js)], fill: rgb("#d5f5e3"))
+
+    // ── arrows ────────────────────────────────────────────────────────────
+    // Sources → Market Data
+    arr((7.5, 11.15), (5.0, 9.9))
+
+    // Market Data → its DB
+    arr((3.5, 9.1), (3.5, 8.2))
+
+    // Market Data → Training (Kafka)
+    kafka((5.6, 9.5), (9.4, 9.5), [market.data.ingested])
+
+    // Training → MLflow DB
+    arr((11.5, 9.1), (11.5, 8.2))
+
+    // Training → Inference (Kafka)
+    kafka((11.5, 9.1), (11.5, 5.9), [model.trained])
+
+    // Portfolio → Inference (Kafka)
+    kafka((5.6, 5.5), (9.4, 5.5), [portfolio.updated])
+
+    // Portfolio → its DB
+    arr((3.5, 5.1), (3.5, 4.2))
+
+    // Inference → its DB
+    arr((11.5, 5.1), (11.5, 4.2))
+
+    // Portfolio DB → Gateway
+    arr((4.5, 3.4), (6.5, 2.4))
+
+    // Inference DB → Gateway
+    arr((10.5, 3.4), (8.5, 2.4))
+
+    // Gateway → Frontend
+    arr((7.5, 1.6), (7.5, 0.7))
+  }),
+  caption: [Схема информационных потоков системы RiskOps],
+)
 
 Оркестрация: DAG `daily_risk_pipeline` (Apache Airflow) запускается ежедневно в 06:00 UTC и выполняет последовательность: `health_checks => ingest_market_data => train_models => poll_training => run_inference => verify_results`.
 
 === Организация хранения данных
 
-Хранение всех структурированных данных производится в реляционной СУБД PostgreSQL 16. Состав таблиц предметной области приведён в таблице 2.
-
-#align(right)[_Таблица 2_]
-#figure(
-  table(
-    columns: (45mm, auto),
-    align: (left + horizon, left + horizon),
-    table.header([Таблица], [Назначение]),
-    [`raw_prices`], [Сырые дневные котировки (`symbol`, `price_date`, `close`, `currency`, `source`)],
-    [`processed_returns`], [Логарифмические доходности (`symbol`, `price_date`, `ret`)],
-    [`portfolios`], [Портфели (`id`, `name`, `description`, `currency`, `created_at`, `updated_at`)],
-    [`portfolio_positions`], [Состав портфелей (`portfolio_id`, `symbol`, `weight`)],
-    [`risk_results`], [Результаты расчёта метрик риска (`portfolio_id`, `asof_date`, `horizon_days`, `alpha`, `method`, `metric`, `value`, `model_version`)],
-    [`credit_data`], [Кредитный портфель (синтетические данные)],
-    [`model_registry`], [Локальный реестр обученных моделей (`model_name`, `model_version`, `mlflow_run_id`, `status`, `metrics`)],
-    [`training_jobs`], [Состояние асинхронных заданий обучения (`job_id`, `status`, `model_type`, `results`, `error`)],
-    [`ingestion_log`], [Журнал загрузок рыночных данных],
-  )
-)
-
-Артефакты обученных моделей размещаются в объектном хранилище MinIO (S3-совместимый интерфейс) в бакете `mlflow-artifacts`; метаданные эксперимента — в схеме `mlflow` той же базы PostgreSQL.
+Хранение всех структурированных данных производится в реляционной СУБД PostgreSQL 16. Основные сущности предметной области: портфели и их позиции, сырые котировки и вычисленные доходности, результаты расчёта метрик риска и стресс-тестирования, реестр обученных моделей, журнал загрузок. Артефакты обученных моделей размещаются в объектном хранилище MinIO (S3-совместимый интерфейс) в бакете `mlflow-artifacts`; метаданные эксперимента — в схеме `mlflow` той же базы PostgreSQL.
 
 === Организация входных данных
 
@@ -152,39 +203,18 @@ Yahoo Finance / MOEX ISS / Synthetic
 
 Все микросервисы предоставляют REST API по протоколу HTTP. Спецификации сервисов `portfolio-service` и `market-data-service` выполнены в соответствии со стандартом OpenAPI 3.0.3 (файлы `openapi.yaml` в каталогах соответствующих сервисов). Сервисы на Python (FastAPI) автоматически экспонируют OpenAPI-спецификацию по адресу `/docs`.
 
-Перечень основных эндпоинтов приведён в таблице 3.
+Перечень основных эндпоинтов сгруппирован в таблице 3.
 
 #align(right)[_Таблица 3_]
 #figure(
   table(
-    columns: (18mm, 65mm, auto),
-    align: (left + horizon, left + horizon, left + horizon),
-    table.header([Метод], [Путь], [Назначение]),
-    [GET],    [`/api/portfolios`], [Список портфелей],
-    [POST],   [`/api/portfolios`], [Создание портфеля],
-    [GET],    [`/api/portfolios/{id}`], [Получение портфеля],
-    [DELETE], [`/api/portfolios/{id}`], [Удаление портфеля],
-    [GET],    [`/api/portfolios/{id}/positions`], [Список позиций],
-    [POST],   [`/api/portfolios/{id}/positions`], [Создание/обновление позиции],
-    [DELETE], [`/api/portfolios/{id}/positions/{symbol}`], [Удаление позиции],
-    [GET],    [`/api/portfolios/{id}/risk/latest`], [Последние метрики риска],
-    [GET],    [`/api/portfolios/{id}/risk`], [История метрик риска],
-    [POST],   [`/api/market-data/ingest`], [Загрузка данных по источнику],
-    [POST],   [`/api/market-data/ingest/all`], [Загрузка по всем источникам],
-    [GET],    [`/api/market-data/prices`], [Сырые котировки],
-    [GET],    [`/api/market-data/returns`], [Доходности],
-    [GET],    [`/api/market-data/credit`], [Кредитные данные],
-    [GET],    [`/api/market-data/sources`], [Список источников],
-    [GET],    [`/api/market-data/ingestion-log`], [Журнал загрузок],
-    [POST],   [`/api/risk/train`], [Запуск обучения (асинхронно)],
-    [GET],    [`/api/risk/train/status/{job_id}`], [Статус задания обучения],
-    [GET],    [`/api/risk/train/run/{run_id}`], [Параметры и метрики MLflow-запуска],
-    [GET],    [`/api/risk/models`], [Список зарегистрированных моделей],
-    [POST],   [`/api/risk/backtest`], [Бэк-тестирование VaR],
-    [POST],   [`/api/risk/predict`], [Расчёт метрик риска],
-    [GET],    [`/api/risk/predict/health`], [Состояние загруженных моделей],
-    [GET],    [`/api/risk/scenarios`], [Каталог стресс-сценариев],
-    [POST],   [`/api/risk/scenarios/run`], [Запуск стресс-сценария],
+    columns: (55mm, auto),
+    align: (left + horizon, left + horizon),
+    table.header([Функциональная группа], [Префиксы маршрутов]),
+    [Управление портфелями], [`/api/portfolios/*`, `/api/portfolios/{id}/positions/*`, `/api/portfolios/{id}/risk/*`],
+    [Рыночные данные],       [`/api/market-data/*`],
+    [Обучение моделей],      [`/api/risk/train/*`, `/api/risk/models`, `/api/risk/backtest`],
+    [Инференс и стресс-тесты], [`/api/risk/predict/*`, `/api/risk/scenarios/*`, `/api/risk/correlation`],
   )
 )
 
@@ -192,7 +222,7 @@ Yahoo Finance / MOEX ISS / Synthetic
 
 === Требования к пользовательскому интерфейсу
 
-Веб-интерфейс реализован в виде одностраничного приложения Next.js 14 (React 18, TypeScript 5) и состоит из следующих экранов (маршрутов):
+Веб-интерфейс реализован в виде одностраничного приложения (Next.js, React, TypeScript) и состоит из следующих экранов (маршрутов):
 
 1. *Главная страница (`/`)* — сводные карточки с ключевыми показателями, агрегированный график динамики VaR, таблица последних результатов.
 2. *Портфели (`/portfolio`)* — список портфелей и форма создания, переход к детализации позиций и расчёту метрик риска.
