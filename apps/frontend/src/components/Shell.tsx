@@ -14,7 +14,7 @@ const NAV = [
   { id: 'stress',     href: '/stress',     label: 'Стресс-тесты',      icon: 'stress'     as const },
   { id: 'backtest',   href: '/backtest',   label: 'Бэктестинг',        icon: 'backtest'   as const },
   { id: 'models',     href: '/models',     label: 'Реестр моделей',    icon: 'models'     as const },
-  { id: 'drift',      href: '/drift',      label: 'Мониторинг дрифта', icon: 'drift'      as const },
+  // { id: 'drift',      href: '/drift',      label: 'Мониторинг дрифта', icon: 'drift'      as const },
   { section: 'Данные' },
   { id: 'data',       href: '/data',       label: 'Источники данных',  icon: 'data'       as const },
 ] as const;
