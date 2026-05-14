@@ -88,7 +88,7 @@ export default function DashboardPage() {
       const [pos, latest, history] = await Promise.all([
         portfolioApi.listPositions(id),
         portfolioApi.getLatestRisk(id),
-        portfolioApi.getRiskHistory(id, 90),
+        portfolioApi.getRiskHistory(id, 500),
       ]);
       setPositions(pos);
       setLatestRisk(latest);
@@ -161,11 +161,20 @@ export default function DashboardPage() {
     .map((r) => r.value);
 
   // Build line chart series from risk history
+  // Deduplicate by date (keep most recent run per date) then sort ASC — same logic as portfolio page
+  const dedupeByDate = (entries: RiskResult[]): RiskResult[] => {
+    const seen = new Map<string, RiskResult>();
+    for (const e of entries) {
+      if (!seen.has(e.asof_date)) seen.set(e.asof_date, e);
+    }
+    return Array.from(seen.values()).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
+  };
+
   const historyByMetric = groupByMetric(riskHistory);
   const chartSeries: LineSeries[] = [];
 
-  const varSorted = (historyByMetric['var'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
-  const cvarSorted = (historyByMetric['cvar'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
+  const varSorted = dedupeByDate(historyByMetric['var'] ?? []);
+  const cvarSorted = dedupeByDate(historyByMetric['cvar'] ?? []);
 
   if (varSorted.length > 0) {
     chartSeries.push({
@@ -182,13 +191,39 @@ export default function DashboardPage() {
     });
   }
 
-  // Donut data from positions
+  // Donut data from positions — use dynamic market-value-based shares (same as portfolio page)
   const COLORS = ['var(--primary)', 'var(--accent)', '#6b8f71', '#c9a96e', '#8b6f47', '#4a6b3e'];
+
+  const positionMarketValues = positions.map((p) => {
+    const mktPrice = (p.current_price ?? 0) > 0 ? p.current_price! : p.price;
+    return p.quantity > 0 && mktPrice > 0 ? p.quantity * mktPrice : 0;
+  });
+  const totalMarketValue = positionMarketValues.reduce((s, v) => s + v, 0);
+  const dynamicShares = positionMarketValues.map((v) =>
+    totalMarketValue > 0 ? v / totalMarketValue : 0
+  );
+
   const donutData = positions.map((p, i) => ({
     label: p.symbol,
-    value: Math.abs(p.weight),
+    value: dynamicShares[i],
     color: COLORS[i % COLORS.length],
   }));
+
+  // Portfolio value tracking
+  const initialValue = positions.reduce((s, p) => {
+    if (p.quantity > 0 && p.price > 0) return s + p.quantity * p.price;
+    return s;
+  }, 0);
+  const currentValue = positions.reduce((s, p) => {
+    const mktPrice = p.current_price ?? 0;
+    if (p.quantity > 0 && mktPrice > 0) return s + p.quantity * mktPrice;
+    if (p.quantity > 0 && p.price > 0) return s + p.quantity * p.price;
+    return s;
+  }, 0);
+  const valueChange = currentValue - initialValue;
+  const valueChangePct = initialValue > 0 ? (valueChange / initialValue) * 100 : 0;
+  const hasMarketPrices = positions.some((p) => (p.current_price ?? 0) > 0);
+  const portfolioCurrency = selectedPortfolio?.currency ?? 'USD';
 
   const formatDate = (d: string) => d.slice(5); // MM-DD
 
@@ -334,23 +369,30 @@ export default function DashboardPage() {
                         <thead>
                           <tr>
                             <th>Тикер</th>
-                            <th style={{ textAlign: 'right' }}>Вес</th>
+                            <th style={{ textAlign: 'right' }}>Тек. цена</th>
+                            <th style={{ textAlign: 'right' }}>Доля</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {positions.map((p, i) => (
-                            <tr key={p.symbol}>
-                              <td>
-                                <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
-                                  <span className="mono">{p.symbol}</span>
-                                </div>
-                              </td>
-                              <td style={{ textAlign: 'right' }} className="mono">
-                                {(p.weight * 100).toFixed(1)}%
-                              </td>
-                            </tr>
-                          ))}
+                          {positions.map((p, i) => {
+                            const mktPrice = p.current_price ?? 0;
+                            return (
+                              <tr key={p.symbol}>
+                                <td>
+                                  <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length] }} />
+                                    <span className="mono">{p.symbol}</span>
+                                  </div>
+                                </td>
+                                <td style={{ textAlign: 'right', color: mktPrice > 0 ? 'var(--ink-1)' : 'var(--ink-4)' }} className="mono">
+                                  {mktPrice > 0 ? `${mktPrice.toFixed(2)} ${portfolioCurrency}` : '—'}
+                                </td>
+                                <td style={{ textAlign: 'right' }} className="mono">
+                                  {(dynamicShares[i] * 100).toFixed(1)}%
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -360,6 +402,65 @@ export default function DashboardPage() {
                 )}
               </div>
             </div>
+
+            {/* Portfolio value tracking */}
+            {positions.length > 0 && (
+              <div className="card" style={{ marginTop: 20 }}>
+                <div className="card-head">
+                  <div className="card-title">Стоимость портфеля</div>
+                  {!hasMarketPrices && (
+                    <span style={{ fontSize: 10, color: 'var(--ink-4)' }}>нет рыночных цен</span>
+                  )}
+                </div>
+                {riskLoading ? (
+                  <Skeleton height={56} />
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                        Начальная стоимость
+                      </div>
+                      <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-1)' }}>
+                        {initialValue > 0
+                          ? `${initialValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${portfolioCurrency}`
+                          : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 2 }}>кол-во × цена покупки</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                        Текущая стоимость
+                      </div>
+                      <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-1)' }}>
+                        {currentValue > 0
+                          ? `${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${portfolioCurrency}`
+                          : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 2 }}>кол-во × рыночная цена</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                        Изменение
+                      </div>
+                      <div style={{
+                        fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                        color: initialValue > 0 ? (valueChange > 0 ? 'var(--good)' : valueChange < 0 ? 'var(--crit)' : 'var(--ink-3)') : 'var(--ink-4)',
+                      }}>
+                        {initialValue > 0 ? (
+                          <>{valueChange >= 0 ? '+' : ''}{valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {portfolioCurrency}</>
+                        ) : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
+                      </div>
+                      {initialValue > 0 && (
+                        <div style={{ fontSize: 10, marginTop: 2, fontVariantNumeric: 'tabular-nums',
+                          color: valueChange > 0 ? 'var(--good)' : valueChange < 0 ? 'var(--crit)' : 'var(--ink-3)' }}>
+                          {valueChangePct >= 0 ? '+' : ''}{valueChangePct.toFixed(2)}%
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Latest risk results table */}
             {latestRisk.length > 0 && (

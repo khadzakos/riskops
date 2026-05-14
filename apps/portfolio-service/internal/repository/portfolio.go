@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +17,46 @@ type PortfolioRepo struct {
 
 func NewPortfolioRepo(db *pgxpool.Pool) *PortfolioRepo {
 	return &PortfolioRepo{db: db}
+}
+
+// getFXRate returns the latest USD/RUB exchange rate from raw_prices.
+// It tries USDRUB=X (Yahoo Finance) first, then USD000UTSTOM (MOEX).
+// Returns 1.0 (no conversion) if no FX data is available.
+func (r *PortfolioRepo) getFXRate(ctx context.Context) float64 {
+	var rate float64
+	err := r.db.QueryRow(ctx,
+		`SELECT close FROM raw_prices
+		 WHERE symbol IN ('USDRUB=X', 'USD000UTSTOM')
+		 ORDER BY
+		     CASE symbol
+		         WHEN 'USDRUB=X'      THEN 0
+		         WHEN 'USD000UTSTOM'  THEN 1
+		         ELSE 2
+		     END ASC,
+		     price_date DESC
+		 LIMIT 1`).Scan(&rate)
+	if err != nil || rate <= 0 {
+		return 1.0
+	}
+	return rate
+}
+
+// convertPrice converts a price from srcCurrency to dstCurrency using the given USD/RUB rate.
+// Supported conversions: USD↔RUB. All other pairs are returned unchanged.
+func convertPrice(price float64, srcCurrency, dstCurrency string, usdRub float64) float64 {
+	src := strings.ToUpper(strings.TrimSpace(srcCurrency))
+	dst := strings.ToUpper(strings.TrimSpace(dstCurrency))
+	if src == dst || src == "" || dst == "" || usdRub <= 0 {
+		return price
+	}
+	switch {
+	case src == "USD" && dst == "RUB":
+		return price * usdRub
+	case src == "RUB" && dst == "USD":
+		return price / usdRub
+	default:
+		return price
+	}
 }
 
 func (r *PortfolioRepo) List(ctx context.Context) ([]models.Portfolio, error) {
@@ -76,15 +117,27 @@ func (r *PortfolioRepo) Delete(ctx context.Context, id int64) error {
 // Positions
 
 func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([]models.Position, error) {
-	// Join with raw_prices to get the latest market price for each symbol.
+	// Fetch portfolio currency for FX conversion.
+	var portfolioCurrency string
+	if err := r.db.QueryRow(ctx,
+		`SELECT currency FROM portfolios WHERE id = $1`, portfolioID).
+		Scan(&portfolioCurrency); err != nil {
+		portfolioCurrency = "USD" // safe default
+	}
+
+	// Fetch USD/RUB rate once for the whole batch.
+	usdRub := r.getFXRate(ctx)
+
+	// Join with raw_prices to get the latest market price AND currency for each symbol.
 	// Prefer real data sources (yahoo, moex, fred) over synthetic/generated data.
 	// Within the same source priority tier, pick the most recent price_date.
 	rows, err := r.db.Query(ctx,
 		`SELECT pp.portfolio_id, pp.symbol, pp.weight, pp.quantity, pp.price, pp.updated_at,
-		        COALESCE(rp.close, 0) AS current_price
+		        COALESCE(rp.close, 0)    AS current_price,
+		        COALESCE(rp.currency, '') AS price_currency
 		 FROM portfolio_positions pp
 		 LEFT JOIN LATERAL (
-		     SELECT close FROM raw_prices
+		     SELECT close, currency FROM raw_prices
 		     WHERE symbol = pp.symbol
 		     ORDER BY
 		         CASE source
@@ -106,8 +159,20 @@ func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([
 	var out []models.Position
 	for rows.Next() {
 		var p models.Position
-		if err := rows.Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt, &p.CurrentPrice); err != nil {
+		if err := rows.Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt, &p.CurrentPrice, &p.PriceCurrency); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
+		}
+		// Convert both current_price and purchase price to portfolio currency if needed.
+		// price_currency reflects the native currency of the asset (e.g. RUB for MOEX stocks).
+		// p.Price (purchase price) was stored in that same native currency, so it must be
+		// converted too — otherwise P&L comparisons mix currencies.
+		if p.PriceCurrency != "" {
+			if p.CurrentPrice > 0 {
+				p.CurrentPrice = convertPrice(p.CurrentPrice, p.PriceCurrency, portfolioCurrency, usdRub)
+			}
+			if p.Price > 0 {
+				p.Price = convertPrice(p.Price, p.PriceCurrency, portfolioCurrency, usdRub)
+			}
 		}
 		out = append(out, p)
 	}
@@ -175,14 +240,24 @@ func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, s
 		}
 	}
 
-	// Return the updated position with current market price (prefer real sources over synthetic)
+	// Fetch portfolio currency and FX rate for conversion.
+	var portfolioCurrency string
+	if err2 := r.db.QueryRow(ctx,
+		`SELECT currency FROM portfolios WHERE id = $1`, portfolioID).
+		Scan(&portfolioCurrency); err2 != nil {
+		portfolioCurrency = "USD"
+	}
+	usdRub := r.getFXRate(ctx)
+
+	// Return the updated position with current market price and currency (prefer real sources over synthetic)
 	var p models.Position
 	err = r.db.QueryRow(ctx,
 		`SELECT pp.portfolio_id, pp.symbol, pp.weight, pp.quantity, pp.price, pp.updated_at,
-		        COALESCE(rp.close, 0) AS current_price
+		        COALESCE(rp.close, 0)    AS current_price,
+		        COALESCE(rp.currency, '') AS price_currency
 		 FROM portfolio_positions pp
 		 LEFT JOIN LATERAL (
-		     SELECT close FROM raw_prices
+		     SELECT close, currency FROM raw_prices
 		     WHERE symbol = pp.symbol
 		     ORDER BY
 		         CASE source
@@ -196,9 +271,18 @@ func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, s
 		 ) rp ON true
 		 WHERE pp.portfolio_id = $1 AND pp.symbol = $2`,
 		portfolioID, symbol).
-		Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt, &p.CurrentPrice)
+		Scan(&p.PortfolioID, &p.Symbol, &p.Weight, &p.Quantity, &p.Price, &p.UpdatedAt, &p.CurrentPrice, &p.PriceCurrency)
 	if err != nil {
 		return nil, fmt.Errorf("fetch upserted position: %w", err)
+	}
+	// Convert both current_price and purchase price to portfolio currency if needed.
+	if p.PriceCurrency != "" {
+		if p.CurrentPrice > 0 {
+			p.CurrentPrice = convertPrice(p.CurrentPrice, p.PriceCurrency, portfolioCurrency, usdRub)
+		}
+		if p.Price > 0 {
+			p.Price = convertPrice(p.Price, p.PriceCurrency, portfolioCurrency, usdRub)
+		}
 	}
 	return &p, nil
 }

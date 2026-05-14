@@ -329,8 +329,10 @@ function CorrelationMatrixCard({
 
 function UnifiedPriceChartCard({
   positions,
+  currency,
 }: {
   positions: Position[];
+  currency: string;
 }) {
   const [data, setData] = useState<PriceChartResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -454,7 +456,7 @@ function UnifiedPriceChartCard({
         <LineChart
           series={chartSeries}
           height={240}
-          yFormat={(v) => `$${v.toFixed(2)}`}
+          yFormat={(v) => `${v.toFixed(2)} ${currency}`}
           xFormat={(v) => String(v).slice(5)}
           xTicks={8}
         />
@@ -804,7 +806,7 @@ export default function PortfolioPage() {
                   </div>
                   <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-1)' }}>
                     {initialValue > 0
-                      ? `$${initialValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      ? `${initialValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${selectedPortfolio?.currency ?? ''}`
                       : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
                   </div>
                   <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 2 }}>кол-во × цена покупки</div>
@@ -817,7 +819,7 @@ export default function PortfolioPage() {
                   </div>
                   <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--ink-1)' }}>
                     {currentValue > 0
-                      ? `$${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                      ? `${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${selectedPortfolio?.currency ?? ''}`
                       : <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>}
                   </div>
                   <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 2 }}>кол-во × рыночная цена</div>
@@ -839,7 +841,7 @@ export default function PortfolioPage() {
                     {initialValue > 0 ? (
                       <>
                         {valueChange >= 0 ? '+' : ''}
-                        {`$${valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                        {`${valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${selectedPortfolio?.currency ?? ''}`}
                       </>
                     ) : (
                       <span style={{ color: 'var(--ink-4)', fontSize: 14 }}>—</span>
@@ -958,13 +960,13 @@ export default function PortfolioPage() {
                             {p.quantity > 0 ? p.quantity.toLocaleString('ru-RU', { maximumFractionDigits: 4 }) : '—'}
                           </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: 'var(--ink-2)' }}>
-                            {p.price > 0 ? `$${p.price.toFixed(2)}` : '—'}
+                            {p.price > 0 ? `${p.price.toFixed(2)} ${selectedPortfolio?.currency ?? ''}` : '—'}
                           </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: mktPrice > 0 ? 'var(--ink-1)' : 'var(--ink-4)' }}>
-                            {mktPrice > 0 ? `$${mktPrice.toFixed(2)}` : '—'}
-                          </td>
+                                            {mktPrice > 0 ? `${mktPrice.toFixed(2)} ${selectedPortfolio?.currency ?? ''}` : '—'}
+                                          </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
-                            {posCurrentValue !== null ? `$${posCurrentValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}` : '—'}
+                            {posCurrentValue !== null ? `${posCurrentValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ${selectedPortfolio?.currency ?? ''}` : '—'}
                           </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', fontVariantNumeric: 'tabular-nums', color: pnlColor, fontSize: 12 }}>
                             {posPnl !== null ? (
@@ -999,13 +1001,13 @@ export default function PortfolioPage() {
                       <td />
                       <td />
                       <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-                        {currentValue > 0 ? `$${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                        {currentValue > 0 ? `${currentValue.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${selectedPortfolio?.currency ?? ''}` : '—'}
                       </td>
                       <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, fontVariantNumeric: 'tabular-nums',
                         color: valueChange > 0 ? 'var(--good)' : valueChange < 0 ? 'var(--crit)' : 'var(--ink-3)' }}>
                         {initialValue > 0 && hasMarketPrices ? (
                           <>
-                            <div>{valueChange >= 0 ? '+' : ''}{valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div>{valueChange >= 0 ? '+' : ''}{valueChange.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {selectedPortfolio?.currency ?? ''}</div>
                             <div style={{ fontSize: 10, fontWeight: 400 }}>{valueChangePct >= 0 ? '+' : ''}{valueChangePct.toFixed(2)}%</div>
                           </>
                         ) : '—'}
@@ -1083,7 +1085,7 @@ export default function PortfolioPage() {
         {/* ── Unified Price Chart ────────────────────────────────────── */}
         {selectedId !== null && positions.length > 0 && (
           <div style={{ marginTop: 8 }}>
-            <UnifiedPriceChartCard positions={positions} />
+            <UnifiedPriceChartCard positions={positions} currency={selectedPortfolio?.currency ?? 'USD'} />
           </div>
         )}
 

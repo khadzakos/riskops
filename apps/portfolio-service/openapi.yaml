@@ -271,7 +271,10 @@ components:
         current_price:
           type: number
           format: double
-          description: Latest market price per share (from raw_prices). 0 if no market data available.
+          description: Latest market price per share converted to portfolio currency. 0 if no market data available.
+        price_currency:
+          type: string
+          description: Original currency of the market price before conversion (e.g. "USD", "RUB"). Empty if no market data.
         updated_at:
           type: string
           format: date-time

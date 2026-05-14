@@ -520,11 +520,12 @@ def _train_montecarlo_pipeline(
         try:
             bt_result = run_rolling_backtest(
                 returns=port_rets,
-                model_type="historical",   # fast baseline for auto-backtest
+                model_type="montecarlo",
                 alpha=req.alpha,
                 lookback_days=_BACKTEST_LOOKBACK,
                 test_days=_MIN_BACKTEST_TEST_DAYS,
                 horizon_days=req.horizon_days,
+                n_simulations=500,
             )
             bt_report = build_report(bt_result, symbols=req.symbols, mlflow_run_id=run_id)
             log_backtest_to_mlflow(

@@ -305,11 +305,74 @@ def predict_garch(
     # Annualised volatility
     vol_annualised = cond_vol * np.sqrt(252)
 
-    # Parametric VaR/CVaR — Normal distribution
-    z_alpha = stats.norm.ppf(1.0 - alpha)
-    var = float(-z_alpha * cond_vol)
-    pdf_z = stats.norm.pdf(z_alpha)
-    cvar = float(pdf_z / (1.0 - alpha) * cond_vol)
+    # Parametric VaR/CVaR — use the distribution the model was actually trained with.
+    # arch stores the distribution name in arch_result.model.distribution.name
+    # and fitted parameters in arch_result.params (e.g. 'nu', 'lambda').
+    q_level = 1.0 - alpha  # left-tail quantile level (e.g. 0.01 for 99% VaR)
+    try:
+        dist_name: str = arch_result.model.distribution.name.lower()
+    except Exception:
+        dist_name = "normal"
+
+    if dist_name in ("normal", "gaussian"):
+        z = stats.norm.ppf(q_level)
+        var = float(-z * cond_vol)
+        cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
+
+    elif dist_name in ("t", "studentst", "student's t"):
+        nu = float(arch_result.params.get("nu", 0.0))
+        if nu < 2.1:
+            logger.warning(
+                "GARCH dist='t' but nu=%.2f (invalid) — falling back to Normal for VaR/CVaR", nu
+            )
+            z = stats.norm.ppf(q_level)
+            var = float(-z * cond_vol)
+            cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
+        else:
+            scale = np.sqrt((nu - 2.0) / nu)
+            z = float(stats.t.ppf(q_level, df=nu) * scale)
+            var = float(-z * cond_vol)
+            pdf_z = stats.t.pdf(z / scale, df=nu) / scale
+            cdf_z = float(q_level)
+            cvar = float(pdf_z / cdf_z * (nu + (z / scale) ** 2) / (nu - 1) * scale * cond_vol)
+
+    elif dist_name in ("skewt", "skewed student's t", "skewstudent"):
+        nu = float(arch_result.params.get("nu", 0.0))
+        lam = float(arch_result.params.get("lambda", 0.0))
+        if nu < 2.1:
+            logger.warning(
+                "GARCH dist='skewt' but nu=%.2f (invalid) — falling back to Normal", nu
+            )
+            z = stats.norm.ppf(q_level)
+            var = float(-z * cond_vol)
+            cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
+        else:
+            try:
+                from arch.univariate.distribution import SkewStudent
+                skewt_dist = SkewStudent()
+                z = float(skewt_dist.ppf(q_level, parameters=np.array([nu, lam])))
+                var = float(-z * cond_vol)
+                tail_probs = np.linspace(1e-6, q_level, 10_000)
+                tail_quantiles = skewt_dist.ppf(tail_probs, parameters=np.array([nu, lam]))
+                cvar = float(-np.mean(tail_quantiles) * cond_vol)
+            except Exception as exc:
+                logger.warning(
+                    "SkewStudent CVaR computation failed (%s) — falling back to Student-t", exc
+                )
+                scale = np.sqrt((nu - 2.0) / nu)
+                z = float(stats.t.ppf(q_level, df=nu) * scale)
+                var = float(-z * cond_vol)
+                pdf_z = stats.t.pdf(z / scale, df=nu) / scale
+                cvar = float(
+                    pdf_z / q_level * (nu + (z / scale) ** 2) / (nu - 1) * scale * cond_vol
+                )
+
+    else:
+        # Unknown distribution — fall back to Normal with a warning
+        logger.warning("Unknown GARCH distribution %r — using Normal for VaR/CVaR", dist_name)
+        z = stats.norm.ppf(q_level)
+        var = float(-z * cond_vol)
+        cvar = float(stats.norm.pdf(z) / (1.0 - alpha) * cond_vol)
 
     # Additional metrics from historical returns (needed for MDD, Sharpe, Sortino, Beta)
     port_rets, _ = _load_portfolio_returns(portfolio_id, lookback_days)

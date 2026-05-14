@@ -8,6 +8,9 @@ Pipeline steps (in order):
   4. poll_training          — GET  /api/risk/train/status/{id}  (poll until done)
   5. run_inference          — POST /api/risk/predict            (Inference Service, all portfolios)
   6. verify_results         — sanity-check that risk_results rows were written
+  7. run_backtest           — POST /api/risk/backtest for garch + montecarlo models
+  8. aggregate_alerts       — combine backtest statuses → OK / WARN / CRIT severity
+  9. conditional_retrain    — re-trigger training only when aggregate severity == CRIT
 
 Environment variables (set in docker-compose for Airflow):
   MARKET_DATA_SERVICE_URL   default: http://market-data-service:8083
@@ -79,7 +82,7 @@ def _check_health(url: str, service: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task callables
+# Task callables — steps 1–6 (unchanged)
 # ---------------------------------------------------------------------------
 
 def health_checks() -> None:
@@ -96,7 +99,6 @@ def ingest_market_data(**context) -> None:
     log.info("Triggering ingest/all at %s", url)
     result = _post(url, {})
     log.info("Ingest result: %s", result)
-    # Push result to XCom so downstream tasks can inspect it
     context["ti"].xcom_push(key="ingest_result", value=result)
 
 
@@ -253,6 +255,213 @@ def verify_results(**context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# MLOps loop — steps 7–9: backtest → aggregate alerts → conditional retrain
+# ---------------------------------------------------------------------------
+
+# Symbols and model types evaluated in the daily backtest health check.
+_BACKTEST_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "SBER", "GAZP"]
+_BACKTEST_MODELS  = ["garch", "montecarlo"]
+
+# Severity escalation (mirrors rolling_backtest._classify_status):
+#   p > 0.05        → OK
+#   0.01 < p ≤ 0.05 → WARN
+#   p ≤ 0.01        → CRIT  ← triggers conditional_retrain
+
+
+def run_backtest(**context) -> None:
+    """Run rolling out-of-sample VaR backtest for each configured model type.
+
+    Calls POST /api/risk/backtest synchronously for each model in
+    _BACKTEST_MODELS.  Each call returns a BacktestResponse that includes
+    Kupiec / Christoffersen p-values and a pre-classified status
+    (OK | WARN | CRIT).
+
+    Results are pushed to XCom under key ``backtest_results`` as a list of
+    dicts, one per model type.
+    """
+    url = f"{_training_url()}/api/risk/backtest"
+    backtest_results = []
+
+    for model_type in _BACKTEST_MODELS:
+        payload = {
+            "symbols": _BACKTEST_SYMBOLS,
+            "model_type": model_type,
+            "alpha": 0.99,
+            "lookback_days": 252,
+            "test_days": 60,
+            "horizon_days": 1,
+            "n_simulations": 1000,   # reduced for speed in rolling mode
+            "log_to_mlflow": True,
+        }
+        log.info("Running backtest: model=%s  symbols=%s", model_type, _BACKTEST_SYMBOLS)
+        try:
+            result = _post(url, payload, timeout=300)   # up to 5 min per model
+            status = result.get("status", "UNKNOWN")
+            log.info(
+                "Backtest %s: status=%s  violations=%d/%d  "
+                "kupiec_p=%.4f  cc_p=%.4f  violation_rate=%.4f  expected=%.4f",
+                model_type, status,
+                result.get("violations", 0), result.get("total_obs", 0),
+                result.get("kupiec_pvalue", float("nan")),
+                result.get("christoffersen_pvalue_cc", float("nan")),
+                result.get("violation_rate", float("nan")),
+                result.get("expected_rate", float("nan")),
+            )
+            backtest_results.append({
+                "model_type": model_type,
+                "status": status,
+                "violations": result.get("violations", 0),
+                "total_obs": result.get("total_obs", 0),
+                "violation_rate": result.get("violation_rate", 0.0),
+                "expected_rate": result.get("expected_rate", 0.0),
+                "kupiec_pvalue": result.get("kupiec_pvalue", float("nan")),
+                "christoffersen_pvalue_cc": result.get("christoffersen_pvalue_cc", float("nan")),
+                "mlflow_run_id": result.get("mlflow_run_id"),
+            })
+        except Exception as exc:
+            # A failed backtest call is non-fatal: log and continue with other models.
+            log.error("Backtest failed for model=%s: %s", model_type, exc)
+            backtest_results.append({
+                "model_type": model_type,
+                "status": "ERROR",
+                "error": str(exc),
+            })
+
+    context["ti"].xcom_push(key="backtest_results", value=backtest_results)
+    log.info("Backtest step complete: %d model(s) evaluated", len(backtest_results))
+
+
+def aggregate_alerts(**context) -> None:
+    """Aggregate backtest statuses into a single pipeline-level severity.
+
+    Severity escalation rules (most severe wins):
+      - Any CRIT  → aggregate = CRIT
+      - Any WARN  → aggregate = WARN  (unless already CRIT)
+      - All OK    → aggregate = OK
+      - All ERROR → aggregate = ERROR (treated as WARN — data issue, not model issue)
+
+    Pushes ``aggregate_severity`` (str) and ``crit_models`` (list[str]) to XCom.
+    ``crit_models`` contains the model_type strings that returned CRIT status.
+    """
+    backtest_results = context["ti"].xcom_pull(
+        task_ids="run_backtest", key="backtest_results"
+    ) or []
+
+    severity_rank = {"OK": 0, "ERROR": 1, "UNKNOWN": 1, "WARN": 2, "CRIT": 3}
+    aggregate_severity = "OK"
+    crit_models: list[str] = []
+
+    log.info("=== Alert Aggregation ===")
+    for r in backtest_results:
+        model_type = r.get("model_type", "?")
+        status = r.get("status", "UNKNOWN")
+        log.info(
+            "  model=%-12s  status=%-7s  violations=%s/%s  kupiec_p=%s  cc_p=%s",
+            model_type, status,
+            r.get("violations", "?"), r.get("total_obs", "?"),
+            r.get("kupiec_pvalue", "?"), r.get("christoffersen_pvalue_cc", "?"),
+        )
+        if severity_rank.get(status, 1) > severity_rank.get(aggregate_severity, 0):
+            aggregate_severity = status
+        if status == "CRIT":
+            crit_models.append(model_type)
+
+    log.info(
+        "Aggregate severity: %s  crit_models: %s",
+        aggregate_severity, crit_models,
+    )
+
+    context["ti"].xcom_push(key="aggregate_severity", value=aggregate_severity)
+    context["ti"].xcom_push(key="crit_models", value=crit_models)
+
+
+def conditional_retrain(**context) -> None:
+    """Trigger model retraining only when aggregate backtest severity is CRIT.
+
+    Decision logic:
+      - OK   → skip retrain (models are well-calibrated)
+      - WARN → skip retrain (monitor; retrain not yet warranted)
+      - CRIT → trigger full retrain via POST /api/risk/train, then poll to completion
+      - ERROR / UNKNOWN → skip retrain (data issue, not model issue)
+
+    On CRIT, this task blocks until the new training job completes (max 30 min),
+    mirroring the behaviour of the ``poll_training`` step.
+    """
+    aggregate_severity = context["ti"].xcom_pull(
+        task_ids="aggregate_alerts", key="aggregate_severity"
+    ) or "UNKNOWN"
+    crit_models = context["ti"].xcom_pull(
+        task_ids="aggregate_alerts", key="crit_models"
+    ) or []
+
+    if aggregate_severity != "CRIT":
+        log.info(
+            "Conditional retrain: severity=%s — skipping (only fires on CRIT)",
+            aggregate_severity,
+        )
+        return
+
+    log.warning(
+        "Conditional retrain: severity=CRIT  crit_models=%s — triggering retrain",
+        crit_models,
+    )
+
+    # Trigger a new training job
+    train_url = f"{_training_url()}/api/risk/train"
+    payload = {
+        "symbols": _BACKTEST_SYMBOLS,
+        "model_type": "all",   # retrain both GARCH and Monte Carlo
+        "alpha": 0.99,
+        "horizon_days": 1,
+        "lookback_days": 252,
+        "n_simulations": 10000,
+    }
+    result = _post(train_url, payload, timeout=30)
+    job_id = result.get("job_id")
+    if not job_id:
+        raise RuntimeError(f"Retrain: training service did not return a job_id: {result}")
+
+    log.info("Retrain job queued: job_id=%s", job_id)
+
+    # Poll until completed or failed (max 30 min)
+    status_url = f"{_training_url()}/api/risk/train/status/{job_id}"
+    max_wait_seconds = 1800
+    poll_interval = 30
+    elapsed = 0
+
+    while elapsed < max_wait_seconds:
+        status_resp = _get(status_url, timeout=30)
+        job_status = status_resp.get("status", "unknown")
+        log.info(
+            "Retrain job %s status: %s (elapsed %ds)", job_id, job_status, elapsed
+        )
+
+        if job_status == "completed":
+            retrain_results = status_resp.get("results", [])
+            log.info("Retrain completed: %d model(s) trained", len(retrain_results))
+            for r in retrain_results:
+                log.info(
+                    "  model=%s  version=%s  VaR=%.4f  CVaR=%.4f  status=%s",
+                    r.get("model_name"), r.get("model_version"),
+                    r.get("var", 0), r.get("cvar", 0), r.get("status"),
+                )
+            context["ti"].xcom_push(key="retrain_job_id", value=job_id)
+            context["ti"].xcom_push(key="retrain_results", value=retrain_results)
+            return
+
+        if job_status == "failed":
+            error = status_resp.get("message", "unknown error")
+            raise RuntimeError(f"Retrain job {job_id} failed: {error}")
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    raise RuntimeError(
+        f"Retrain job {job_id} timed out after {max_wait_seconds}s"
+    )
+
+
+# ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
 
@@ -270,7 +479,8 @@ with DAG(
     default_args=default_args,
     description=(
         "Daily risk pipeline: ingest market data → train models → "
-        "run inference → verify results. Runs at 06:00 UTC."
+        "run inference → verify results → backtest → aggregate alerts → "
+        "conditional retrain. Runs at 06:00 UTC."
     ),
     schedule="0 6 * * *",
     start_date=datetime(2026, 1, 1),
@@ -315,5 +525,26 @@ with DAG(
         execution_timeout=timedelta(minutes=2),
     )
 
-    # Pipeline: health → ingest → train → poll → infer → verify
+    t_backtest = PythonOperator(
+        task_id="run_backtest",
+        python_callable=run_backtest,
+        execution_timeout=timedelta(minutes=20),  # 2 models × up to 5 min each + buffer
+    )
+
+    t_aggregate = PythonOperator(
+        task_id="aggregate_alerts",
+        python_callable=aggregate_alerts,
+        execution_timeout=timedelta(minutes=2),
+    )
+
+    t_retrain = PythonOperator(
+        task_id="conditional_retrain",
+        python_callable=conditional_retrain,
+        execution_timeout=timedelta(minutes=35),  # same as poll_training
+    )
+
+    # Full pipeline:
+    # health → ingest → train → poll → infer → verify
+    #                                         → backtest → aggregate → conditional_retrain
     t_health >> t_ingest >> t_train >> t_poll >> t_infer >> t_verify
+    t_verify >> t_backtest >> t_aggregate >> t_retrain

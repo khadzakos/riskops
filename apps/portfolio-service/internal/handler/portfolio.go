@@ -155,14 +155,16 @@ func toAPIPortfolio(p models.Portfolio) api.Portfolio {
 
 func toAPIPosition(p models.Position) api.Position {
 	cp := p.CurrentPrice
+	pc := p.PriceCurrency
 	return api.Position{
-		PortfolioId:  p.PortfolioID,
-		Symbol:       p.Symbol,
-		Weight:       p.Weight,
-		Quantity:     p.Quantity,
-		Price:        p.Price,
-		CurrentPrice: &cp,
-		UpdatedAt:    p.UpdatedAt,
+		PortfolioId:   p.PortfolioID,
+		Symbol:        p.Symbol,
+		Weight:        p.Weight,
+		Quantity:      p.Quantity,
+		Price:         p.Price,
+		CurrentPrice:  &cp,
+		PriceCurrency: &pc,
+		UpdatedAt:     p.UpdatedAt,
 	}
 }
 

@@ -33,8 +33,9 @@ export interface Position {
   symbol: string;
   weight: number;
   quantity: number;
-  price: number;           // purchase price per share
-  current_price?: number;  // latest market price (0 if unavailable)
+  price: number;            // purchase price per share
+  current_price?: number;   // latest market price converted to portfolio currency (0 if unavailable)
+  price_currency?: string;  // original currency of the market price before conversion (e.g. "USD", "RUB")
   updated_at: string;
 }
 

@@ -111,6 +111,7 @@ class StressResult:
     mean_return: float
     # Metadata
     n_observations: int                     # number of simulated / replayed days
+    fallback_used: bool = False             # True when crisis data unavailable → parametric fallback
     computed_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -256,10 +257,19 @@ def _compute_var_cvar(returns: np.ndarray, alpha: float) -> tuple[float, float]:
 
 
 def _compute_max_drawdown(returns: np.ndarray) -> float:
-    """Maximum peak-to-trough loss (negative number)."""
+    """
+    Maximum peak-to-trough loss (negative number).
+    """
+    if len(returns) == 0:
+        return 0.0
     cumulative = np.cumprod(1.0 + returns)
     running_max = np.maximum.accumulate(cumulative)
-    drawdown = (cumulative - running_max) / running_max
+    with np.errstate(invalid="ignore", divide="ignore"):
+        drawdown = np.where(
+            running_max > 0,
+            (cumulative - running_max) / running_max,
+            0.0,
+        )
     return float(drawdown.min())
 
 
@@ -308,25 +318,30 @@ def _run_historical_replay(
     vol_multiplier: float,
     n_simulations: int,
     alpha: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, bool]:
     """Replay crisis returns, scaled to current portfolio volatility.
 
     If crisis_rets is empty (data not available), falls back to parametric
     stress with vol_multiplier derived from the crisis regime.
+
+    Returns:
+        (simulated_returns, fallback_used) — fallback_used is True when
+        historical data was unavailable and parametric approximation was used.
     """
     if len(crisis_rets) == 0:
-        # Fallback: parametric with crisis-like vol multiplier
+        # BUG-2 fix: track that we fell back to parametric
         logger.info(
             "No historical crisis data — using parametric fallback "
             "(vol_multiplier=%.1f)", vol_multiplier
         )
-        return _run_parametric_stress(
+        sim = _run_parametric_stress(
             port_rets=port_rets,
             vol_multiplier=vol_multiplier,
             corr_shock=0.8,
             n_simulations=n_simulations,
             alpha=alpha,
         )
+        return sim, True  # fallback_used=True
 
     # Scale crisis returns to current portfolio vol
     current_vol = float(np.std(port_rets, ddof=1))
@@ -340,7 +355,7 @@ def _run_historical_replay(
     # Bootstrap-resample to get n_simulations observations
     rng = np.random.default_rng(seed=42)
     indices = rng.integers(0, len(scaled), size=n_simulations)
-    return scaled[indices]
+    return scaled[indices], False  # fallback_used=False
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +411,7 @@ def run_scenario(req: StressRequest) -> StressResult:
     )
 
     scenario_type = scenario_def["type"]
+    fallback_used = False  # will be set True if historical data is missing
 
     if scenario_type == "parametric":
         if vol_multiplier is None:
@@ -425,13 +441,19 @@ def run_scenario(req: StressRequest) -> StressResult:
         if corr_shock is None:
             corr_shock = 0.8
 
-        sim_rets = _run_historical_replay(
+        sim_rets, fallback_used = _run_historical_replay(
             crisis_rets=crisis_rets,
             port_rets=port_rets,
             vol_multiplier=vol_multiplier,
             n_simulations=req.n_simulations,
             alpha=req.alpha,
         )
+        if fallback_used:
+            logger.warning(
+                "Scenario '%s': historical crisis data unavailable — parametric fallback used "
+                "(scenario_type remains 'historical' in response)",
+                req.scenario_id,
+            )
 
     else:
         raise ValueError(f"Unsupported scenario type: {scenario_type!r}")
@@ -457,6 +479,7 @@ def run_scenario(req: StressRequest) -> StressResult:
         stressed_var=stressed_var,
         stressed_cvar=stressed_cvar,
         max_drawdown=max_dd,
+        fallback_used=fallback_used,
         worst_day=worst_day,
         p10_return=p10,
         p1_return=p1,

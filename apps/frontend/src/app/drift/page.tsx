@@ -20,7 +20,8 @@ export default function DriftPage() {
     setError(null);
     try {
       const [ret, h] = await Promise.all([
-        marketDataApi.getReturns({ symbols, limit: 1000 }),
+        // limit=5000: up to 5 symbols × 252 trading days × 4 buffer = enough for rolling vol
+        marketDataApi.getReturns({ symbols, limit: 5000 }),
         inferenceApi.health(),
       ]);
       setReturns(ret);
@@ -51,12 +52,12 @@ export default function DriftPage() {
     (bySymbol[r.symbol] ??= []).push(r);
   });
 
-  // Build time series per symbol (last 60 points)
-  const COLORS = ['var(--primary)', 'var(--crit)', 'var(--accent)', '#6b8f71', '#c9a96e'];
+  // Fixed palette — no undefined CSS vars
+  const COLORS = ['var(--primary)', 'var(--crit)', '#3E5A6B', '#6b8f71', '#c9a96e'];
   const symbols = Object.keys(bySymbol).slice(0, 5);
 
   const returnSeries: LineSeries[] = symbols.map((sym, i) => {
-    const sorted = bySymbol[sym].sort((a, b) => a.price_date.localeCompare(b.price_date)).slice(-60);
+    const sorted = [...bySymbol[sym]].sort((a, b) => a.price_date.localeCompare(b.price_date)).slice(-60);
     return {
       name: sym,
       color: COLORS[i % COLORS.length],
@@ -64,23 +65,25 @@ export default function DriftPage() {
     };
   });
 
-  // Rolling volatility (20-day window) for first symbol
-  const volSeries: LineSeries[] = [];
-  if (symbols.length > 0) {
-    const sym = symbols[0];
-    const sorted = bySymbol[sym].sort((a, b) => a.price_date.localeCompare(b.price_date));
-    const window = 20;
-    const volData: { x: string; y: number }[] = [];
-    for (let i = window; i < sorted.length; i++) {
-      const slice = sorted.slice(i - window, i).map((r) => r.ret);
-      const mean = slice.reduce((s, v) => s + v, 0) / slice.length;
-      const variance = slice.reduce((s, v) => s + (v - mean) ** 2, 0) / slice.length;
-      volData.push({ x: sorted[i].price_date, y: Math.sqrt(variance * 252) });
-    }
-    if (volData.length > 0) {
-      volSeries.push({ name: `${sym} σ(20д)`, color: 'var(--accent)', data: volData });
-    }
-  }
+  // Rolling volatility (20-day window, annualised) — computed for ALL symbols
+  const VOL_WINDOW = 20;
+  const volSeries: LineSeries[] = symbols
+    .map((sym, i) => {
+      const sorted = [...bySymbol[sym]].sort((a, b) => a.price_date.localeCompare(b.price_date));
+      if (sorted.length <= VOL_WINDOW) return null;
+
+      const volData: { x: string; y: number }[] = [];
+      for (let j = VOL_WINDOW; j < sorted.length; j++) {
+        const slice = sorted.slice(j - VOL_WINDOW, j).map((r) => r.ret);
+        const mean = slice.reduce((s, v) => s + v, 0) / slice.length;
+        const variance = slice.reduce((s, v) => s + (v - mean) ** 2, 0) / slice.length;
+        volData.push({ x: sorted[j].price_date, y: Math.sqrt(variance * 252) });
+      }
+
+      if (volData.length === 0) return null;
+      return { name: `${sym} σ(20д)`, color: COLORS[i % COLORS.length], data: volData } as LineSeries;
+    })
+    .filter((s): s is LineSeries => s !== null);
 
   // Histogram for all returns
   const allReturns = returns.map((r) => r.ret);
@@ -92,7 +95,9 @@ export default function DriftPage() {
     const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
     const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length;
     const vol = Math.sqrt(variance * 252);
-    const skew = vals.reduce((s, v) => s + ((v - mean) / Math.sqrt(variance)) ** 3, 0) / vals.length;
+    const skew = vals.length > 2
+      ? vals.reduce((s, v) => s + ((v - mean) / Math.sqrt(variance)) ** 3, 0) / vals.length
+      : 0;
     return { sym, count: vals.length, mean, vol, skew };
   });
 
@@ -195,17 +200,47 @@ export default function DriftPage() {
               </div>
             )}
 
-            {/* Rolling volatility */}
-            {volSeries.length > 0 && (
+            {/* Rolling volatility — all symbols with ≥ 21 observations */}
+            {volSeries.length > 0 ? (
               <div className="card" style={{ marginBottom: 20 }}>
                 <div className="card-head">
                   <div className="card-title">Скользящая волатильность (20д окно, годовая)</div>
+                  <div className="row" style={{ gap: 12 }}>
+                    {volSeries.map((s) => (
+                      <div key={s.name} className="row" style={{ gap: 4, alignItems: 'center' }}>
+                        <div style={{ width: 10, height: 2, background: s.color }} />
+                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{s.name}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 <LineChart
                   series={volSeries}
                   height={180}
                   yFormat={(v) => `${(v * 100).toFixed(1)}%`}
                   xFormat={(v) => String(v).slice(5)}
+                />
+              </div>
+            ) : returns.length > 0 ? (
+              <div className="card" style={{ marginBottom: 20 }}>
+                <div className="card-head">
+                  <div className="card-title">Скользящая волатильность (20д окно, годовая)</div>
+                </div>
+                <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--ink-4)', fontSize: 13 }}>
+                  Недостаточно данных для скользящего окна (нужно ≥ 21 наблюдение на символ)
+                </div>
+              </div>
+            ) : null}
+
+            {/* Distribution histogram */}
+            {bins.length > 0 && (
+              <div className="card" style={{ marginBottom: 20 }}>
+                <div className="card-head">
+                  <div className="card-title">Распределение доходностей</div>
+                </div>
+                <Histogram
+                  bins={bins}
+                  height={180}
                 />
               </div>
             )}
