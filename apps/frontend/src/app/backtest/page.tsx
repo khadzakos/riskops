@@ -129,30 +129,23 @@ export default function BacktestPage() {
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const selectedPortfolio = portfolios.find((p) => p.id === selectedId) ?? null;
-  const byMetric = groupByMetric(riskHistory);
+  const historyByMetric = groupByMetric(riskHistory);
 
-  const varSorted  = (byMetric['var']        ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
-  const cvarSorted = (byMetric['cvar']       ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
-  const volSorted  = (byMetric['volatility'] ?? []).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
+  // Deduplicate by date (keep most recent run per date) then sort ASC — same logic as dashboard/portfolio page
+  const dedupeByDate = (entries: RiskResult[]): RiskResult[] => {
+    const seen = new Map<string, RiskResult>();
+    for (const e of entries) {
+      if (!seen.has(e.asof_date)) seen.set(e.asof_date, e);
+    }
+    return Array.from(seen.values()).sort((a, b) => a.asof_date.localeCompare(b.asof_date));
+  };
+
+  const varSorted  = dedupeByDate(historyByMetric['var']  ?? []);
+  const cvarSorted = dedupeByDate(historyByMetric['cvar'] ?? []);
 
   const chartSeries: LineSeries[] = [];
   if (varSorted.length  > 0) chartSeries.push({ name: 'VaR',  color: 'var(--primary)', data: varSorted.map((r)  => ({ x: r.asof_date, y: r.value })) });
   if (cvarSorted.length > 0) chartSeries.push({ name: 'CVaR', color: 'var(--crit)',    data: cvarSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
-
-  const volSeries: LineSeries[] = volSorted.length > 0
-    ? [{ name: 'Волатильность', color: 'var(--accent)', data: volSorted.map((r) => ({ x: r.asof_date, y: r.value })) }]
-    : [];
-
-  // Method stats
-  const methodGroups: Record<string, RiskResult[]> = {};
-  riskHistory.forEach((r) => { (methodGroups[r.method] ??= []).push(r); });
-  const methodStats = Object.entries(methodGroups).map(([method, results]) => {
-    const vals = results.filter((r) => r.metric === 'var').map((r) => r.value);
-    const avg = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
-    const max = vals.length > 0 ? Math.max(...vals) : null;
-    const min = vals.length > 0 ? Math.min(...vals) : null;
-    return { method, count: results.length, avg, max, min };
-  });
 
   return (
     <>
@@ -385,36 +378,16 @@ export default function BacktestPage() {
           <Skeleton height={300} />
         ) : (
           <>
-            {/* Method stats */}
-            {methodStats.length > 0 && (
-              <div className="grid-4" style={{ marginBottom: 20 }}>
-                {methodStats.map((s) => (
-                  <div key={s.method} className="metric-card">
-                    <div className="metric-label">{s.method}</div>
-                    <div className="metric-value" style={{ fontSize: 18 }}>
-                      {s.avg !== null ? `${(s.avg * 100).toFixed(2)}%` : '—'}
-                    </div>
-                    <div className="metric-sub">Ср. VaR · {s.count} записей</div>
-                    {s.max !== null && s.min !== null && (
-                      <div style={{ fontSize: 10, color: 'var(--ink-4)', marginTop: 4 }}>
-                        min {(s.min * 100).toFixed(2)}% / max {(s.max * 100).toFixed(2)}%
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* VaR / CVaR history chart */}
+            {/* Risk history chart — same as dashboard/portfolio page */}
             <div className="card" style={{ marginBottom: 20 }}>
               <div className="card-head">
-                <div className="card-title">История VaR и CVaR</div>
+                <div className="card-title">История риска</div>
                 {chartSeries.length > 0 && (
                   <div className="row" style={{ gap: 12 }}>
                     {chartSeries.map((s) => (
-                      <div key={s.name} className="row" style={{ gap: 4, alignItems: 'center' }}>
-                        <div style={{ width: 10, height: 2, background: s.color }} />
-                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>{s.name}</span>
+                      <div key={s.name} className="row" style={{ gap: 6, alignItems: 'center' }}>
+                        <div style={{ width: 14, height: 3, background: s.color, borderRadius: 2, flexShrink: 0 }} />
+                        <span style={{ fontSize: 11, color: 'var(--ink)', fontFamily: 'var(--mono)', fontWeight: 500 }}>{s.name}</span>
                       </div>
                     ))}
                   </div>
@@ -432,23 +405,6 @@ export default function BacktestPage() {
                 <div className="empty-state">Нет данных истории риска</div>
               )}
             </div>
-
-            {/* Volatility chart */}
-            {volSeries.length > 0 && (
-              <div className="card" style={{ marginBottom: 20 }}>
-                <div className="card-head">
-                  <div className="card-title">История волатильности</div>
-                </div>
-                {dataLoading ? <Skeleton height={180} /> : (
-                  <LineChart
-                    series={volSeries}
-                    height={180}
-                    yFormat={(v) => `${(v * 100).toFixed(1)}%`}
-                    xFormat={(v) => String(v).slice(5)}
-                  />
-                )}
-              </div>
-            )}
 
             {/* Full history table */}
             {riskHistory.length > 0 && (
