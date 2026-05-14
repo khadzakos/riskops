@@ -6,7 +6,9 @@ package handler
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -135,19 +137,74 @@ func (h *PriceChartHandler) HandlePriceChart(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 
-		// Deduplicate by date — keep the last entry per date to avoid spikes from
-		// duplicate ingestion records (e.g. same date ingested from multiple sources).
+		// Deduplicate by date — prefer real market data sources (yahoo, moex, fred)
+		// over synthetic/generated data. If multiple real-source entries exist for
+		// the same date, keep the last one (most recently ingested).
+		sourceRank := func(src string) int {
+			switch src {
+			case "yahoo", "moex", "fred":
+				return 2 // real data — highest priority
+			case "synthetic", "credit_synthetic":
+				return 0 // generated data — lowest priority
+			default:
+				return 1
+			}
+		}
 		seen := make(map[string]int, len(entries))
 		deduped := make([]priceEntry, 0, len(entries))
 		for _, e := range entries {
 			if idx, exists := seen[e.date]; exists {
-				deduped[idx] = e // overwrite with latest
+				// Replace only if new entry has higher or equal source rank
+				if sourceRank(e.source) >= sourceRank(deduped[idx].source) {
+					deduped[idx] = e
+				}
 			} else {
 				seen[e.date] = len(deduped)
 				deduped = append(deduped, e)
 			}
 		}
 		entries = deduped
+
+		// Outlier filtering using Median Absolute Deviation (MAD).
+		// Removes price spikes that deviate more than 5× MAD from the median.
+		// This catches bad data points (e.g. purchase price accidentally stored
+		// as a raw_price entry) while preserving legitimate price movements.
+		if len(entries) >= 5 {
+			closes := make([]float64, 0, len(entries))
+			for _, e := range entries {
+				if e.close > 0 {
+					closes = append(closes, e.close)
+				}
+			}
+			if len(closes) >= 5 {
+				sorted := make([]float64, len(closes))
+				copy(sorted, closes)
+				sort.Float64s(sorted)
+				median := sorted[len(sorted)/2]
+				absDevs := make([]float64, len(sorted))
+				for i, v := range sorted {
+					absDevs[i] = math.Abs(v - median)
+				}
+				sort.Float64s(absDevs)
+				mad := absDevs[len(absDevs)/2]
+				if mad == 0 {
+					mad = median * 0.01 // fallback: 1% of median
+				}
+				threshold := 5.0 * mad
+				filtered := entries[:0]
+				for _, e := range entries {
+					if e.close <= 0 || math.Abs(e.close-median) <= threshold {
+						filtered = append(filtered, e)
+					}
+				}
+				entries = filtered
+			}
+		}
+
+		if len(entries) == 0 {
+			h.log.Warn("price chart: all points filtered as outliers", zap.String("symbol", sym))
+			continue
+		}
 
 		points := make([]PricePoint, 0, len(entries))
 		basePrice := entries[0].close

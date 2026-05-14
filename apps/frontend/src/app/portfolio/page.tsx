@@ -17,7 +17,7 @@ import {
   type PriceChartResponse,
 } from '@/lib/api';
 
-const COLORS = ['var(--primary)', 'var(--accent)', '#6b8f71', '#c9a96e', '#8b6f47', '#4a6b3e', '#7b5ea7', '#c96e6e'];
+const COLORS = ['var(--primary)', '#3E5A6B', '#6b8f71', '#c9a96e', '#8b6f47', '#7b5ea7', '#c96e6e', '#A06A1F'];
 
 // ── Metric Tooltip ────────────────────────────────────────────────────────────
 
@@ -383,14 +383,19 @@ function UnifiedPriceChartCard({
     );
   }
 
-  // Build LineSeries from price chart data — always use raw close prices
+  // Build LineSeries from price chart data — always use raw close prices.
+  // Color is assigned by the symbol's index in the positions array so it
+  // stays consistent with the table and donut chart even when some symbols
+  // have no price data and are absent from data.series.
+  const symbolColorIndex = new Map(positions.map((p, i) => [p.symbol, i]));
   const chartSeries: LineSeries[] = [];
   if (data?.series) {
-    data.series.forEach((s, i) => {
+    data.series.forEach((s) => {
       if (s.points.length > 0) {
+        const colorIdx = symbolColorIndex.get(s.symbol) ?? 0;
         chartSeries.push({
           name: s.symbol,
-          color: COLORS[i % COLORS.length],
+          color: COLORS[colorIdx % COLORS.length],
           data: s.points.map((p) => ({ x: p.date, y: p.raw })),
         });
       }
@@ -624,13 +629,24 @@ export default function PortfolioPage() {
   if (varSorted.length > 0) riskChartSeries.push({ name: 'VaR', color: 'var(--primary)', data: varSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
   if (cvarSorted.length > 0) riskChartSeries.push({ name: 'CVaR', color: 'var(--crit)', data: cvarSorted.map((r) => ({ x: r.asof_date, y: r.value })) });
 
+  // Compute dynamic share: quantity × current_price (or purchase price as fallback)
+  // This is the correct portfolio allocation by current market value.
+  const positionMarketValues = positions.map((p) => {
+    const mktPrice = (p.current_price ?? 0) > 0 ? p.current_price! : p.price;
+    return p.quantity > 0 && mktPrice > 0 ? p.quantity * mktPrice : 0;
+  });
+  const totalMarketValue = positionMarketValues.reduce((s, v) => s + v, 0);
+  const dynamicShares = positionMarketValues.map((v) =>
+    totalMarketValue > 0 ? v / totalMarketValue : 0
+  );
+
   const donutData = positions.map((p, i) => ({
     label: p.symbol,
-    value: Math.abs(p.weight),
+    value: dynamicShares[i],
     color: COLORS[i % COLORS.length],
   }));
 
-  const totalWeight = positions.reduce((s, p) => s + p.weight, 0);
+  const totalWeight = dynamicShares.reduce((s, v) => s + v, 0);
 
   // ── Portfolio value tracking ───────────────────────────────────────────────
   // initialValue: sum of (quantity × purchase price) for all positions
@@ -928,6 +944,8 @@ export default function PortfolioPage() {
                         ? (posPnl / posInitialValue) * 100
                         : null;
                       const pnlColor = posPnl === null ? 'var(--ink-4)' : posPnl > 0 ? 'var(--good)' : posPnl < 0 ? 'var(--crit)' : 'var(--ink-3)';
+                      // Dynamic share: quantity × current_price / total portfolio market value
+                      const share = dynamicShares[i];
                       return (
                         <tr key={p.symbol} style={{ borderBottom: '1px solid var(--hair)' }}>
                           <td style={{ padding: '6px 8px' }}>
@@ -959,7 +977,7 @@ export default function PortfolioPage() {
                             ) : '—'}
                           </td>
                           <td style={{ textAlign: 'right', padding: '6px 8px', color: 'var(--ink-3)', fontVariantNumeric: 'tabular-nums' }}>
-                            {(p.weight * 100).toFixed(1)}%
+                            {(share * 100).toFixed(1)}%
                           </td>
                           <td style={{ textAlign: 'right', padding: '6px 4px' }}>
                             <button
@@ -992,8 +1010,8 @@ export default function PortfolioPage() {
                           </>
                         ) : '—'}
                       </td>
-                      <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, color: totalWeight > 1.01 || totalWeight < 0.99 ? 'var(--warn)' : 'var(--good)', fontVariantNumeric: 'tabular-nums' }}>
-                        {(totalWeight * 100).toFixed(1)}%
+                      <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 700, color: 'var(--good)', fontVariantNumeric: 'tabular-nums' }}>
+                        100.0%
                       </td>
                       <td />
                     </tr>

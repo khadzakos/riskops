@@ -156,11 +156,10 @@ func (s *IngestService) Ingest(ctx context.Context, req IngestRequest) (*IngestR
 }
 
 func (s *IngestService) IngestAll(ctx context.Context, dateFrom, dateTo time.Time) ([]*IngestResult, error) {
-	// Default symbols for market data sources
 	defaultSymbols := map[string][]string{
-		"yahoo":     {"AAPL", "MSFT", "GOOGL", "SPY"},
-		"moex":      {"SBER", "GAZP", "LKOH", "YNDX"},
-		"synthetic": {"AAPL", "MSFT", "GOOGL"},
+		"yahoo": {"AAPL", "MSFT", "GOOGL", "SPY"},
+		"moex":  {"SBER", "GAZP", "LKOH", "YNDX"},
+		"fred":  {"DGS10", "FEDFUNDS", "VIX", "CPI", "UNRATE"},
 	}
 
 	var results []*IngestResult

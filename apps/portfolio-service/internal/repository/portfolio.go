@@ -77,7 +77,8 @@ func (r *PortfolioRepo) Delete(ctx context.Context, id int64) error {
 
 func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([]models.Position, error) {
 	// Join with raw_prices to get the latest market price for each symbol.
-	// DISTINCT ON (pp.symbol) with ORDER BY price_date DESC picks the most recent price.
+	// Prefer real data sources (yahoo, moex, fred) over synthetic/generated data.
+	// Within the same source priority tier, pick the most recent price_date.
 	rows, err := r.db.Query(ctx,
 		`SELECT pp.portfolio_id, pp.symbol, pp.weight, pp.quantity, pp.price, pp.updated_at,
 		        COALESCE(rp.close, 0) AS current_price
@@ -85,7 +86,14 @@ func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([
 		 LEFT JOIN LATERAL (
 		     SELECT close FROM raw_prices
 		     WHERE symbol = pp.symbol
-		     ORDER BY price_date DESC
+		     ORDER BY
+		         CASE source
+		             WHEN 'yahoo' THEN 0
+		             WHEN 'moex'  THEN 0
+		             WHEN 'fred'  THEN 0
+		             ELSE 1
+		         END ASC,
+		         price_date DESC
 		     LIMIT 1
 		 ) rp ON true
 		 WHERE pp.portfolio_id = $1
@@ -107,11 +115,22 @@ func (r *PortfolioRepo) ListPositions(ctx context.Context, portfolioID int64) ([
 }
 
 // GetLatestMarketPrice returns the most recent close price for a symbol from raw_prices.
+// Prefers real data sources (yahoo, moex, fred) over synthetic/generated data.
 // Returns 0 and no error if no price data is available.
 func (r *PortfolioRepo) GetLatestMarketPrice(ctx context.Context, symbol string) (float64, error) {
 	var close float64
 	err := r.db.QueryRow(ctx,
-		`SELECT close FROM raw_prices WHERE symbol = $1 ORDER BY price_date DESC LIMIT 1`,
+		`SELECT close FROM raw_prices
+		 WHERE symbol = $1
+		 ORDER BY
+		     CASE source
+		         WHEN 'yahoo' THEN 0
+		         WHEN 'moex'  THEN 0
+		         WHEN 'fred'  THEN 0
+		         ELSE 1
+		     END ASC,
+		     price_date DESC
+		 LIMIT 1`,
 		symbol).Scan(&close)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -156,7 +175,7 @@ func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, s
 		}
 	}
 
-	// Return the updated position with current market price
+	// Return the updated position with current market price (prefer real sources over synthetic)
 	var p models.Position
 	err = r.db.QueryRow(ctx,
 		`SELECT pp.portfolio_id, pp.symbol, pp.weight, pp.quantity, pp.price, pp.updated_at,
@@ -165,7 +184,14 @@ func (r *PortfolioRepo) UpsertPosition(ctx context.Context, portfolioID int64, s
 		 LEFT JOIN LATERAL (
 		     SELECT close FROM raw_prices
 		     WHERE symbol = pp.symbol
-		     ORDER BY price_date DESC
+		     ORDER BY
+		         CASE source
+		             WHEN 'yahoo' THEN 0
+		             WHEN 'moex'  THEN 0
+		             WHEN 'fred'  THEN 0
+		             ELSE 1
+		         END ASC,
+		         price_date DESC
 		     LIMIT 1
 		 ) rp ON true
 		 WHERE pp.portfolio_id = $1 AND pp.symbol = $2`,

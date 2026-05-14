@@ -51,3 +51,6 @@ riskops-ui-templates/
 
 # MacOS
 .DS_Store
+
+# PNG
+*.png
