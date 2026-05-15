@@ -106,6 +106,8 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: riskops
       AWS_SECRET_ACCESS_KEY: riskops123
+      MLFLOW_AUTH_CONFIG_PATH: ""
+      MLFLOW_ENABLE_PROXY_FIX: "true"
     depends_on:
       db:
         condition: service_healthy
