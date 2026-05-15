@@ -102,7 +102,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      MLFLOW_TRACKING_URI: http://localhost:3000
+      MLFLOW_TRACKING_URI: http://111.88.147.199:3000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: riskops
       AWS_SECRET_ACCESS_KEY: riskops123
