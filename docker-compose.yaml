@@ -96,7 +96,7 @@ services:
       sh -c "python -m pip install --no-cache-dir -q psycopg2-binary boto3 && mlflow server
       --host 0.0.0.0
       --port 3000
-      --allowed-hosts mlflow,mlflow:3000,localhost,localhost:3000,127.0.0.1,127.0.0.1:3000
+      --allowed-hosts mlflow,mlflow:3000,localhost,localhost:3000,127.0.0.1,127.0.0.1:3000,111.88.147.199,111.88.147.199:3000
       --backend-store-uri postgresql://riskops:riskops@db:5432/riskops?options=-csearch_path%3Dmlflow
       --default-artifact-root s3://mlflow-artifacts/"
     ports:
